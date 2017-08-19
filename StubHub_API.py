@@ -2,6 +2,61 @@ import base64
 import requests
 import json
 from pprint import pprint
+import time
+
+
+class StubHub_API_Request(object):
+    """
+    Class to handle all actual http interactions with StubHub API
+    """
+    # Counter for all requests (this way we can easily see how many have occurred)
+    i = 0
+    # List holder for recent requests (list of times for the req_limit most recent requests)
+    recent_req = []
+    # The number of requests to limit of a given time
+    req_limit_time = 60 # seconds
+    req_limit = 10
+
+    @classmethod
+    def canireq(cls):
+        if len(cls.recent_req) < cls.req_limit:
+            return True
+        else:
+            now = time.time()
+            cls.recent_req = [req for req in cls.recent_req if ((now - req) < cls.req_limit_time)]
+            if len(cls.recent_req) < cls.req_limit:
+                return True
+            else:
+                return False
+
+    @classmethod
+    def request(cls, method, url, wait=True, verbose=True, **kwargs):
+        while True:
+            now = time.time()
+            if cls.canireq():
+                # Log a recent request at the current time
+                cls.recent_req.append(now)
+                cls.i += 1
+                if method=='get':
+                    r = requests.get(url, **kwargs)
+                elif method=='post':
+                    r = requests.post(url, **kwargs)
+                # Do some validation.  For now really basic, but could catch and repeat on a "too many recent requests" error (if there is one)
+                if r.status_code == 200:
+                    return r
+                else:
+                    raise StubHub_API_Request_Error("Request returned with status code \"{0}\"".format(r.status_code))
+            if wait:
+                # Wait the amount of time you think you need to (could be wrong if other requests happen between now and
+                # then, but a good first guess)
+                waittime = int(cls.recent_req[0] + cls.req_limit_time - now) + 1
+                if verbose:
+                    print("Too many recent requests - sleeping {0} seconds before trying again".format(waittime))
+                time.sleep(waittime)
+            else:
+                raise StubHub_API_Request_Error("Too many recent requests - did not submit a request")
+
+
 
 class StubHub_API(object):
     CONTENT_TYPE = 'application/x-www-form-urlencoded'
@@ -65,8 +120,8 @@ class StubHub_API(object):
         token_unencoded = self.c_key + ":" + self.c_secret
         token = base64.b64encode(token_unencoded.encode('utf-8'))
 
-        print("Submitting request with token (unencoded): {0}".format(token_unencoded))
-        print("Submitting request with token (encoded)  : {0}".format(token))
+        print("Submitting login request with token (unencoded): {0}".format(token_unencoded))
+        print("Submitting login request with token (encoded)  : {0}".format(token))
 
         # Login Request via POST to API
         # Not 100% sure what this extra decode is needed for
@@ -80,7 +135,7 @@ class StubHub_API(object):
         }
 
         # Should replace this with a class that actually knows how to properly handle these errors
-        r = requests.post(self.url_login, headers=headers, data=data)
+        r = StubHub_API_Request.request('post', self.url_login, headers=headers, data=data)
         if r.status_code != 200:
             raise Exception("API returned error code: {0}".format(r.status_code))
 
@@ -127,7 +182,7 @@ class StubHub_API(object):
         self.expires_in = file['expires_in']
         self.refresh_token = file['refresh_token']
 
-    def get_event_listings(self, eventid):
+    def get_event_listings(self, eventid, max_requests = 100):
         """
         Get all listings from an event and return as a dict.
 
@@ -161,16 +216,15 @@ class StubHub_API(object):
                 return inv_request.json()
 
         # Perform first inventory get
-        i_max = 30
         i = 1
-        inv = make_request(self.url_inventory_search, headers, params)
+        inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=headers, params=params, wait=True).json()
         print("get {2}: retrieved {0}/{1} listings".format(len(inv['listing']), inv['totalListings'], 1))
         # Loop through until you have all listings, appending the listing key of the return to the original inv
         # (all other returns, except for start, will be the same)
-        while i < i_max and len(inv['listing']) < inv['totalListings']:
+        while i < max_requests and len(inv['listing']) < inv['totalListings']:
             i += 1
             params['start'] = len(inv['listing'])
-            this_inv = make_request(self.url_inventory_search, headers, params)
+            this_inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=headers, params=params, wait=True).json()
             inv['listing'] = inv['listing'] + this_inv['listing']
             print("get {2}: retrieved {0}/{1} listings".format(len(inv['listing']), inv['totalListings'], i))
 
@@ -219,18 +273,27 @@ class StubHub_API(object):
         return self.url_api + self.INVENTORY_SEARCH_V2_URL
 
 
+# Exceptions
+class GetListingsError(Exception):
+    pass
+class StubHub_API_Request_Error(Exception):
+    pass
+
 
 if __name__ == "__main__":
 
     # # Test of getting and storing credentials
+    print("Number of StubHub_API_Request calls before test: ", StubHub_API_Request.i)
     stubhub = StubHub_API()
     stubhub.set_scope(scope='PRODUCTION')
     loginfile = 'login_prod.json'
     stubhub.set_login_info(loginfile=loginfile)
     credfile = 'credentials_prod.json'
     stubhub.store_credentials(file=credfile)
+    print("Number of StubHub_API_Request calls after test: ", StubHub_API_Request.i)
 
     # Test of getting everything from a listing
+    print("Number of StubHub_API_Request calls before test: ", StubHub_API_Request.i)
     stubhub = StubHub_API()
     stubhub.set_scope(scope='PRODUCTION')
     credfile = 'credentials_prod.json'
@@ -238,3 +301,4 @@ if __name__ == "__main__":
     eventid = "9873482" # Late August Panthers game vs Steelers
     listfile = 'test_listing.json'
     stubhub.store_event_listings(filename=listfile, eventid=eventid)
+    print("Number of StubHub_API_Request calls after test: ", StubHub_API_Request.i)
