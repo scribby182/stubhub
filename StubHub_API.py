@@ -18,6 +18,10 @@ class StubHub_API_Request(object):
     req_limit_time = 60 # seconds
     req_limit = 10
 
+    # Number of times to retry a request attempt that fails during the request call (applies to things like errors
+    # from the requests package due to timeout, NOT responses from the Stubhub API that indicate errors)
+    req_attempts_limit = 10
+
     @classmethod
     def canireq(cls):
         if len(cls.recent_req) < cls.req_limit:
@@ -31,17 +35,32 @@ class StubHub_API_Request(object):
                 return False
 
     @classmethod
-    def request(cls, method, url, wait=True, verbose=True, **kwargs):
+    def request(cls, method, url, wait=True, verbose=True, warnfile='warnings.log', **kwargs):
         while True:
             now = time.time()
             if cls.canireq():
-                # Log a recent request at the current time
+                # Try to make the request, catching and retrying on a requests ConnectionError
+                # Do not validate the data, just validate that the request got a response at all
+                req_attempts = 0
+                while req_attempts < cls.req_attempts_limit:
+                    req_attempts += 1
+                    try:
+                        if method=='get':
+                            r = requests.get(url, **kwargs)
+                        elif method=='post':
+                            r = requests.post(url, **kwargs)
+                        # If this all worked, break from the while loop (skipping the below else statement)
+                        break
+                    except requests.ConnectionError as e:
+                        # If we found an error we know, log a warning and repeat
+                        warn("Warning: Caught and handled connection error: {0}".format(e))
+                        warn("\tRequest details: {0}, {1}".format(url, kwargs))
+                else:
+                    # If max attempts reached, raise an error
+                    raise StubHub_API_Request_Error("Attempted request failed - max attempts reached ({0})".format(cls.req_attempts_limit))
+                # Log the recent successful request at the current time
                 cls.recent_req.append(now)
                 cls.i += 1
-                if method=='get':
-                    r = requests.get(url, **kwargs)
-                elif method=='post':
-                    r = requests.post(url, **kwargs)
                 # Do some validation.  For now really basic, but could catch and repeat on a "too many recent requests" error (if there is one)
                 if r.status_code == 200:
                     return r
@@ -137,10 +156,7 @@ class StubHub_API(object):
             'scope': self.scope
         }
 
-        # Should replace this with a class that actually knows how to properly handle these errors
         r = StubHub_API_Request.request('post', self.url_login, headers=headers, data=data)
-        if r.status_code != 200:
-            raise Exception("API returned error code: {0}".format(r.status_code))
 
         # Save important credential information internally
         self.access_token = r.json()['access_token']
@@ -257,14 +273,22 @@ class StubHub_API(object):
 
         # Perform first inventory get
         i = 1
-        inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=self.standard_headers, params=params, wait=True).json()
+        def safe_get():
+            try:
+                inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=self.standard_headers, params=params, wait=True).json()
+            except StubHub_API_Request_Error as e:
+                warn("Warning: During get_event_inventory() caught StubHub_API_Request_Error \"{0}\".  No results returned.".format(e), warnfile)
+                raise GetListingsError("Error in StubHub_API_Request during listings access for event {0}.  Caught exception \"{1}\"".format(eventid, e))
+            return inv
+
+        inv = safe_get()
         print("get {2}: retrieved {0}/{1} listings".format(len(inv['listing']), inv['totalListings'], 1))
         # Loop through until you have all listings, appending the listing key of the return to the original inv
         # (all other returns, except for start, will be the same)
         while i < max_requests and len(inv['listing']) < inv['totalListings']:
             i += 1
             params['start'] = len(inv['listing'])
-            this_inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=self.standard_headers, params=params, wait=True).json()
+            this_inv = safe_get()
             try:
                 inv['listing'] = inv['listing'] + this_inv['listing']
                 print("get {2}: retrieved {0}/{1} listings".format(len(inv['listing']), inv['totalListings'], i))
@@ -288,7 +312,7 @@ class StubHub_API(object):
         return inv
 
 
-    def store_event_inventory(self, filename = None, eventid = None, file_format='txt'):
+    def store_event_inventory(self, filename = None, eventid = None, file_format='txt', warnfile='warnings.log'):
         """
         Store all listings from an event to a file in JSON
 
@@ -302,7 +326,12 @@ class StubHub_API(object):
                         gzip: binary gzip file using gzip package
         :return: Dict of event listings (including pricing and other summaries)
         """
-        event_inventory = self.get_event_inventory(eventid=eventid)
+        try:
+            event_inventory = self.get_event_inventory(eventid=eventid, warnfile=warnfile)
+        except GetListingsError as e:
+            warn("Warning: store_event_inventory caught GetListingsError while accessing data for event {0}.  No data saved".format(eventid), warnfile)
+            raise GetListingsError("Error storing event listings - could not pull inventory from StubHub")
+
         if file_format == 'txt':
             with open(filename, 'w') as f:
                 json.dump(event_inventory, f, **self.JSON_FORMAT)

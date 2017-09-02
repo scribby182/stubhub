@@ -1,6 +1,6 @@
 import json
 import time
-from StubHub_API import StubHub_API, StubHub_API_Request_Error
+from StubHub_API import StubHub_API, StubHub_API_Request_Error, GetListingsError
 import datetime
 
 JSON_FORMAT = {'sort_keys': True, 'indent': 4, 'separators': (',', ': ')}
@@ -33,8 +33,8 @@ def stubhub_list_scrape(credfile='credentials_prod.json', eventfile='events.json
         list_file = event_loc + '/' + str(eventid) + "_" + now + ".json"
         print("Saving listings for event {0} in file {1}".format(eventid, list_file))
         try:
-            stubhub.store_event_inventory(filename=list_file, eventid=eventid, file_format=file_format)
-        except StubHub_API_Request_Error as e:
+            stubhub.store_event_inventory(filename=list_file, eventid=eventid, file_format=file_format, warnfile=warnfile)
+        except (StubHub_API_Request_Error, GetListingsError) as e:
             if handle_failures:
                 warn("{1}: Warning: Failed to store event inventory for event {0} - event skipped".format(eventid, now), filename=warnfile)
             else:
