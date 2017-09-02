@@ -3,6 +3,7 @@ import requests
 import json
 from pprint import pprint
 import time
+import gzip
 
 
 class StubHub_API_Request(object):
@@ -60,10 +61,12 @@ class StubHub_API_Request(object):
 
 class StubHub_API(object):
     CONTENT_TYPE = 'application/x-www-form-urlencoded'
-    API_URL_PRODUCTION = 'https://api.stubhub.com/'
-    API_URL_SANDBOX = 'https://api.stubhubsandbox.com/'
-    LOGIN_URL = 'login'
-    INVENTORY_SEARCH_V2_URL = 'search/inventory/v2'
+    API_URL_PRODUCTION = 'https://api.stubhub.com'
+    API_URL_SANDBOX = 'https://api.stubhubsandbox.com'
+    LOGIN_URL = '/login'
+    INVENTORY_SEARCH_V2_URL = '/search/inventory/v2'
+    EVENT_INFORMATION_V2_URL = '/catalog/events/v2'
+    EVENT_SEARCH_V3_URL = '/search/catalog/events/v3'
     JSON_FORMAT = {'sort_keys':True, 'indent':4, 'separators':(',', ': ')}
 
     def __init__(self):
@@ -182,19 +185,67 @@ class StubHub_API(object):
         self.expires_in = file['expires_in']
         self.refresh_token = file['refresh_token']
 
-    def get_event_listings(self, eventid, max_requests = 100):
+
+    def search_events(self, query, city=None, rows=500, parking=False):
+        """
+        Search for events based on a query with optional city and return a dict of results.
+
+        Could be expanded to use more of the API's features (finer search criteria).  See:
+        https://developer.stubhub.com/store/site/pages/doc-viewer.jag?category=Search&api=EventSearchAPI&endpoint=searchforeventsv3&version=v3
+
+        :param query: Any terms to search by (eg: "Carolina Panthers")
+        :param city: City field in the search API
+        :param rows: Number of results to return (max is 500)
+        :param parking: Include parking listings in search results
+        :return: Dict of results
+        """
+        params = {
+            'q': query,
+            'city': city,
+            'sort': 'eventDateLocal asc',
+            'rows': rows,
+            'parking': parking,
+        }
+        events = StubHub_API_Request.request('get', url=self.url_event_search, headers=self.standard_headers,
+                                             params=params, wait=True).json()
+        return events
+
+
+    def store_searched_events(self, filename = None, **kwargs):
+        """
+        Store all events found in an event search to file in JSON
+
+        :param filename: File to store data to
+        :return: None
+        """
+        events = self.search_events(**kwargs)
+        with open(filename, 'w') as f:
+            json.dump(events, f, **self.JSON_FORMAT)
+
+    def get_event_info(self, eventid):
+        """
+        Get all information for an event and return as a dict
+
+        :param eventid:
+        :return: Dict of event information
+        """
+        # print("Getting info for event \"{0}\"".format(eventid))
+        url = self.url_event_information + "/" + str(eventid)
+        # print("url: ", url)
+        info = StubHub_API_Request.request('get', url=url, headers=self.standard_headers, wait=True).json()
+        return info
+
+
+    def get_event_inventory(self, eventid, max_requests = 100, event_info='try', warnfile='warnings.log'):
         """
         Get all listings from an event and return as a dict.
 
         :param eventid: Event ID for the event requested
+        :param event_info: If True, append information from the event to the returned dictionary
+                           If "try", attempt to get the info but handle the exception and print a warning if it does
+                           not succeed
         :return: Dict of event listings (including pricing and other summaries)
         """
-        headers = {
-            'Content-Type': self.CONTENT_TYPE,
-            'Authorization': 'Bearer ' + self.access_token,
-            'Accept': 'application/json',
-            'Accept-Encoding': 'application/json',
-        }
         params = {
             'eventid': eventid,
             'rows': 250,
@@ -204,46 +255,62 @@ class StubHub_API(object):
             'pricingsummary': 'true',
         }
 
-        def make_request(url, headers, params):
-            # TODO: Need to handle test for timeout, as I wont know how many recent requests have occurred.
-            # TODO: Should this be a class that knows how to handle that sort of thing?
-            # TODO: Make a API request class, that then has many routines or subclasses to do this stuff and has common error
-            # TODO: handling?
-            inv_request = requests.get(url, headers=headers, params=params)
-            if inv_request.status_code != 200:
-                raise Exception("API returned error code: {0}".format(inv_request.status_code))
-            else:
-                return inv_request.json()
-
         # Perform first inventory get
         i = 1
-        inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=headers, params=params, wait=True).json()
+        inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=self.standard_headers, params=params, wait=True).json()
         print("get {2}: retrieved {0}/{1} listings".format(len(inv['listing']), inv['totalListings'], 1))
         # Loop through until you have all listings, appending the listing key of the return to the original inv
         # (all other returns, except for start, will be the same)
         while i < max_requests and len(inv['listing']) < inv['totalListings']:
             i += 1
             params['start'] = len(inv['listing'])
-            this_inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=headers, params=params, wait=True).json()
-            inv['listing'] = inv['listing'] + this_inv['listing']
-            print("get {2}: retrieved {0}/{1} listings".format(len(inv['listing']), inv['totalListings'], i))
+            this_inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=self.standard_headers, params=params, wait=True).json()
+            try:
+                inv['listing'] = inv['listing'] + this_inv['listing']
+                print("get {2}: retrieved {0}/{1} listings".format(len(inv['listing']), inv['totalListings'], i))
+            except KeyError as e:
+                # TODO: This is a stopgap.  I think I've got a case where sometimes I request exactly the last index and then it returns an inventory without listings.  For now, use a general catch here..
+                warn("Warning: Got KeyError when accessing listings - no new inventory data accessed.  Problem with indexing on request?", warnfile)
+
+        # Append event info to the inventory dict (nice to have it all in one place for later)
+        if event_info:
+            try:
+                inv['event_info'] = self.get_event_info(eventid)
+            except StubHub_API_Request_Error as e:
+                if event_info == 'try':
+                    # event info is a nice to have, not a need to have.  Let this one slide...
+                    warn("Warning: Event info for {0} could not be accessed".format(eventid), warnfile)
+                else:
+                    raise e
 
         # Right now I'm only returning inv rather than storing in this class.  Does that make sense?
         # This class is more for interacting with the StubHub API, and not about formatting the data I get from it.
         return inv
 
 
-    def store_event_listings(self, filename = None, eventid = None):
+    def store_event_inventory(self, filename = None, eventid = None, file_format='txt'):
         """
         Store all listings from an event to a file in JSON
 
+        See ref for information on read/write json to gzip:
+        https://stackoverflow.com/questions/39450065/python-3-read-write-compressed-json-objects-from-to-gzip-file
+        
         :param filename: File to store data to
         :param eventid: Event ID for the event requested
+        :file_format: Format for the saved file:
+                        txt: regular text file
+                        gzip: binary gzip file using gzip package
         :return: Dict of event listings (including pricing and other summaries)
         """
-        event_listintgs = self.get_event_listings(eventid=eventid)
-        with open(filename, 'w') as f:
-            json.dump(event_listintgs, f, **self.JSON_FORMAT)
+        event_inventory = self.get_event_inventory(eventid=eventid)
+        if file_format == 'txt':
+            with open(filename, 'w') as f:
+                json.dump(event_inventory, f, **self.JSON_FORMAT)
+        elif file_format == 'gzip':
+            with gzip.GzipFile(filename, 'w') as f:
+                json_str = json.dumps(event_inventory, **self.JSON_FORMAT)
+                json_bytes = json_str.encode('utf-8')
+                f.write(json_bytes)
 
 
     def set_scope(self, scope = "PRODUCTION"):
@@ -272,6 +339,23 @@ class StubHub_API(object):
     def url_inventory_search(self):
         return self.url_api + self.INVENTORY_SEARCH_V2_URL
 
+    @property
+    def url_event_information(self):
+        return self.url_api + self.EVENT_INFORMATION_V2_URL
+
+    @property
+    def url_event_search(self):
+        return self.url_api + self.EVENT_SEARCH_V3_URL
+
+    @property
+    def standard_headers(self):
+        headers = {
+            'Content-Type': self.CONTENT_TYPE,
+            'Authorization': 'Bearer ' + self.access_token,
+            'Accept': 'application/json',
+            'Accept-Encoding': 'application/json',
+        }
+        return headers
 
 # Exceptions
 class GetListingsError(Exception):
@@ -279,26 +363,63 @@ class GetListingsError(Exception):
 class StubHub_API_Request_Error(Exception):
     pass
 
+# Helpers
+def warn(message, filename=None):
+    """
+    Print a warning to the screen and log in a file
+    :param filename: Filename to append warning (or none))
+    :return: None
+    """
+    print(message)
+    if filename:
+        with open(filename, 'a') as f:
+            f.write(message + "\n")
+
 
 if __name__ == "__main__":
-
-    # # Test of getting and storing credentials
-    print("Number of StubHub_API_Request calls before test: ", StubHub_API_Request.i)
-    stubhub = StubHub_API()
-    stubhub.set_scope(scope='PRODUCTION')
-    loginfile = 'login_prod.json'
-    stubhub.set_login_info(loginfile=loginfile)
-    credfile = 'credentials_prod.json'
-    stubhub.store_credentials(file=credfile)
-    print("Number of StubHub_API_Request calls after test: ", StubHub_API_Request.i)
+    #
+    # # # Test of getting and storing credentials
+    # print("Number of StubHub_API_Request calls before test: ", StubHub_API_Request.i)
+    # stubhub = StubHub_API()
+    # stubhub.set_scope(scope='PRODUCTION')
+    # loginfile = 'login_prod.json'
+    # stubhub.set_login_info(loginfile=loginfile)
+    # credfile = 'credentials_prod.json'
+    # stubhub.store_credentials(file=credfile)
+    # print("Number of StubHub_API_Request calls after test: ", StubHub_API_Request.i)
 
     # Test of getting everything from a listing
+    # print("Number of StubHub_API_Request calls before test: ", StubHub_API_Request.i)
+    # stubhub = StubHub_API()
+    # stubhub.set_scope(scope='PRODUCTION')
+    # credfile = 'credentials_prod.json'
+    # stubhub.load_credentials(file=credfile)
+    # eventid = "9873482" # Late August Panthers game vs Steelers
+    # listfile = 'test_listing.json'
+    # stubhub.store_event_inventory(filename=listfile, eventid=eventid)
+    # print("Number of StubHub_API_Request calls after test: ", StubHub_API_Request.i)
+    #
+    # # Test of getting info for an event
+    # print("Number of StubHub_API_Request calls before test: ", StubHub_API_Request.i)
+    # stubhub = StubHub_API()
+    # stubhub.set_scope(scope='PRODUCTION')
+    # credfile = 'credentials_prod.json'
+    # stubhub.load_credentials(file=credfile)
+    # eventid = "9873482" # Late August Panthers game vs Steelers
+    # event_info = stubhub.get_event_info(eventid=eventid)
+    # pprint(event_info)
+    # print("Number of StubHub_API_Request calls after test: ", StubHub_API_Request.i)
+
+    # Test of getting info for an event
     print("Number of StubHub_API_Request calls before test: ", StubHub_API_Request.i)
     stubhub = StubHub_API()
     stubhub.set_scope(scope='PRODUCTION')
     credfile = 'credentials_prod.json'
     stubhub.load_credentials(file=credfile)
-    eventid = "9873482" # Late August Panthers game vs Steelers
-    listfile = 'test_listing.json'
-    stubhub.store_event_listings(filename=listfile, eventid=eventid)
+    stubhub.store_searched_events(filename="2017_Carolina_Panthers_events.json", query="\"at Carolina Panthers\" -Preseason -\"UNC Charlotte 49ers -\"Gameday Hospitality\"", city='Charlotte')
+    # events = stubhub.search_events('Carolina Panthers', city='Charlotte')
+    # pprint(events)
+    # print(len(events['events']))
     print("Number of StubHub_API_Request calls after test: ", StubHub_API_Request.i)
+
+
