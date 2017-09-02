@@ -196,14 +196,14 @@ def inv_headers(access_token):
 # debug code
 if __name__ == "__main__":
 
-    # # Test of getting and storing credentials
-    # loginfile = 'login_prod.json'
-    # store_credentials(loginfile, file='credentials_prod.json', scope='prod')
+    # Test of getting and storing credentials
+    loginfile = 'login_prod.json'
+    store_credentials(loginfile, file='credentials_prod.json', scope='prod')
 
-    # Test of getting everything from a listing
-    eventid = "9873482" # Late August Panthers game vs Steelers
-    rows = 250 # Just something big to get everything
-    credentials = 'credentials_prod.json' # get the credentials from a file
-    filename = 'test_listing.json'
-    # listings = get_event_listings(eventid, credentials, scope='prod', rows=rows)
-    store_event_listings(filename, eventid=eventid, credentials=credentials, scope='prod', rows=rows)
+    # # Test of getting everything from a listing
+    # eventid = "9873482" # Late August Panthers game vs Steelers
+    # rows = 250 # Just something big to get everything
+    # credentials = 'credentials_prod.json' # get the credentials from a file
+    # filename = 'test_listing.json'
+    # # listings = get_event_listings(eventid, credentials, scope='prod', rows=rows)
+    # store_event_listings(filename, eventid=eventid, credentials=credentials, scope='prod', rows=rows)
