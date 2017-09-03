@@ -5,9 +5,11 @@ class Seat(object):
     """
     Object to hold data associated with a single seat
     """
-    def __init__(self, price=None, available=None):
+    def __init__(self, price=None, available=None, facevalue=None, list_id=None):
         self.price = price
+        self.facevalue = facevalue
         self.available = available
+        self.list_id = list_id
 
 
     def __repr__(self):
@@ -60,7 +62,7 @@ class SeatGroup(object):
 
         if isinstance(seat, Seat) or isinstance(seat, SeatGroup):
             if name in self.seats:
-                raise SeatGroupError("Seat \"{0}\" already in use".format(name))
+                raise DuplicateSeatError("Seat \"{0}\" already in use".format(name))
             else:
                 # Store the Seat and maintain a sorted list of names
                 bisect.insort(self.sorted_names, name)
@@ -149,4 +151,6 @@ class SeatGroup(object):
 
 # Exceptions
 class SeatGroupError(Exception):
+    pass
+class DuplicateSeatError(Exception):
     pass
