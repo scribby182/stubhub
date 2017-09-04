@@ -1,12 +1,17 @@
-from Seats import DuplicateSeatError, SeatGroupError, SeatGroup, Seat
+import datetime
+import re
+import os
+from pprint import pprint
 import json
+from Seats import DuplicateSeatError, SeatGroupError, SeatGroupChronology, SeatGroup, Seat
+from stubhub_list_scrape import DATETIME_FORMAT
 
 class Event(object):
     """
     Object for a event such as a game or concert.
     """
     def __init__(self):
-        self.chronology = {}
+        self.chronology = SeatGroupChronology()
         self.datetime = None
         self.location = None
         self.meta = {} # For things like home/away team, etc.
@@ -21,76 +26,56 @@ class Event(object):
         # formats to a standard dict?
         raise NotImplementedError()
 
-    def add_timepoint(self, datetime, json_file):
+    def add_timepoint(self, timepoint, json_file):
         """
-        Add an Event timepoint from a JSON formatted event file.
+        Add a SeatGroup timepoint to the event's chronology from a JSON formatted event file, identified by a timepoint
 
-        :param json_file:
-        :return:
+        :param timepoint: A datetime object (used as the key to identify the timepoint)
+        :param json_file: Filename of a JSON file with event listings data
+        :return: None
         """
-        print("DEBUG: Adding timepoint {0} from file {1}".format(datetime, json_file))
-        # Load event information to dictionary
-        with open(json_file, 'r') as f:
-            event_dict = json.load(f)
+        self.chronology.add_seatgroup_from_event_json(timepoint, json_file)
 
-        sg = SeatGroup()
-        for listing in event_dict['listing']:
-            # Unpack and handle possible missing values
-            try:
-                facevalue = listing['faceValue']['amount']
-            except KeyError:
-                facevalue = None
-            price = listing['currentPrice']['amount']
-            list_id = listing['listingId']
-            section = listing['sellerSectionName']
-            # Row is occasionally a list of up to 2 rows.  In that case, the seatNumbers will have repeated elements, ie:
-            #  quantity=4
-            #  rows=[1,2]
-            #  seatNumbers=[5,6,5,6]
-            rows = listing['row'].split(',')
-            seatNumbers = listing.get('seatNumbers')
-            quantity = listing['quantity']
-            # For seatnumbers that are not specified, use list_id plus an index
-            if len(rows) == 2:
-                # Sort of awkward way of handling len(rows)==2, but... This will make searNumbers the right length
-                if quantity % 2 == 0:
-                    quantity = quantity // 2
+
+    def scrape_timepoints_from_dir(self, eventid, directory):
+        """
+        Scrapes directory for JSON listings files of format "eventid_YYYY-MM-DD_hh-mm-ss.json" and adds them to event.
+
+        :param eventid: EventID to look for in directory (only adds events with this ID)
+        :param directory: Directory to search for listing files
+        :return: None
+        """
+
+        def parse_listings_fn(fn):
+            match = re.match(r'(\d+)_(.+)\.json', fn)
+            eventid = int(match.group(1))
+            timepoint = datetime.datetime.strptime(match.group(2), DATETIME_FORMAT)
+            return (eventid, timepoint)
+
+        # Get all filenames in the directory, parse them into (eventid, datetime), then add and that match the requested
+        # eventID to the Event
+        for fn in os.listdir(directory):
+            full_fn = os.path.join(directory, fn)
+            if os.path.isfile(full_fn):
+                try:
+                    this_id, this_time = parse_listings_fn(fn)
+                except:
+                    print(
+                        "DEBUG: WARNING: {0} cannot be parsed into listings filename format - skipping".format(
+                            fn))
+                    continue
+                if this_id == eventid:
+                    self.add_timepoint(this_time, full_fn)
                 else:
-                    raise EventError("Error adding timepoint - quantity of a two-row listing not an even number (section: {0}, rows: {1}, quantity: {2}".format(section, rows, quantity))
-
-            for row in rows:
-                if seatNumbers == "General Admission":
-                    local_seatNumbers = ["{0}-GA{1}".format(list_id, i) for i in range(0, quantity)]
-                elif seatNumbers is None:
-                    local_seatNumbers = ["{0}-None{1}".format(list_id, i) for i in range(0, quantity)]
-                else:
-                    # Seat numbers can be NaN even if they're a comma separated list
-                    seat_gen = mygen()
-                    # Use only seatNumbers[:quantity] to avoid duplicate seats when we have a two-row case
-                    local_seatNumbers = ["{0}-NaN{1}".format(list_id, next(seat_gen)) if x=="NaN" else x for x in seatNumbers.split(',')[:quantity]]
-
-                for seatNumber in local_seatNumbers:
-                    print('DEBUG: Creating seat with Price: {0} (face: {4}), Loc: ({1}, {2}, {3})'.format(price, section, row, seatNumber, facevalue))
-                    seat = Seat(price=price,
-                                list_id=list_id,
-                                facevalue=facevalue,
-                                available=True,
-                                )
-                    # Some listing files have duplicate listings.  Handle these here and warn the user
-                    loc = (section, row, seatNumber)
-                    try:
-                        sg.add(seat, loc)
-                    except DuplicateSeatError:
-                        print("WARNING: Duplicate seat detected at {0}".format(loc))
-            self.chronology[datetime] = sg
-
-
+                    print("DEBUG: {0} is not part of event {1} - skipping".format(fn, eventid))
+            else:
+                print("DEBUG: {0} is not a file".format(fn))
     # Properties
     # Add day_of_week property?
     # Add time of event/date of event, which pulls from the self.datetime?
 
 # Exceptions
-def EventError(Exception):
+class EventError(Exception):
     pass
 
 # Helper
