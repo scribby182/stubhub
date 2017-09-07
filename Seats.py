@@ -12,7 +12,26 @@ class Seat(object):
         self.facevalue = facevalue
         self.available = available
         self.list_id = list_id
+        # These are what are used in evaluating equality.  Put them up here so I don't forget to add to the list
+        # if we add new attributes
+        self._equality_attributes = ['price', 'facevalue', 'available', 'list_id']
 
+    def __eq__(self, other):
+        """
+        Evaluate equality of two Seats by comparing all their important attributes
+
+        :param other: Another Seat
+        :return: Boolean
+        """
+        for attr in self._equality_attributes:
+            try:
+                if getattr(self, attr) == getattr(other, attr):
+                    continue
+                else:
+                    return False
+            except AttributeError:
+                return False
+        return True
 
     def __repr__(self):
         return "{0}(price={1}, available={2})".format(type(self).__name__, self.price, self.available)
@@ -25,6 +44,38 @@ class SeatGroup(object):
     def __init__(self):
         self.seats = {}
         self.sorted_names = []
+
+    def __len__(self):
+        """
+        Return the number of seats in the SeatGroup, including seats in nested groups.
+
+        :return:
+        """
+        length = 0
+        for seatname in self.seats:
+            try:
+                length += len(self.seats[seatname])
+            except TypeError:
+                length += 1
+        return length
+
+    def __eq__(self, other):
+        """
+        Compare two SeatGroups by ensuring they have identical seat entries.
+
+        :param other: Another SeatGroup
+        :return: Boolean
+        """
+        for seatname in (self.seats.keys() | other.seats.keys()):
+            try:
+                if self.seats[seatname] == other.seats[seatname]:
+                    continue
+                else:
+                    return False
+            except KeyError:
+                return False
+        # If I get here, we're all the same!
+        return True
 
     def add(self, seat, name, make_deep_groups=True):
         """
@@ -109,7 +160,8 @@ class SeatGroup(object):
         :param seat_locs:
         :return:
         """
-        seats = zip(seat_locs, self.get_seats_as_list(seat_locs))
+        seats_as_list = self.get_seats_as_list(seat_locs)
+        seats = zip(seat_locs, seats_as_list)
         newsg = SeatGroup()
         for loc, seat in seats:
             newsg.add(seat, loc)
@@ -119,13 +171,15 @@ class SeatGroup(object):
         """
         Return a list of seats described by an iterable of seat location tuples
 
-        :param seat_loc:
+        :param seat_locs:
         :return: List of seat objects
         """
         # TODO: Add wildcards, ie: loc=(section1, rowA, *)?  Or can this be covered by just get(loc=(section1, rowA)) then an action on that new group?
         returned = [None] * len(seat_locs)
         for i, loc in enumerate(seat_locs):
-            if len(loc) == 1:
+            if not (isinstance(loc, tuple) or isinstance(loc, list)):
+                raise SeatGroupError("Invalid seat_loc - must be a list of tuples")
+            elif len(loc) == 1:
                 returned[i] = self.seats[loc[0]]
             else:
                 try:
@@ -135,20 +189,60 @@ class SeatGroup(object):
                     raise SeatGroupError("Seat '{0}' is a Seat but was used as a SeatGroup with location '{1}'".format(loc[0], loc))
         return returned
 
-    def get_locs(self):
+    def get_locs(self, seat_locs=None, depth=None):
         """
         Returns a list of tuples identifying all the seats in this SeatGroup, including seats nested in other SeatGroups
         :return:
         """
-        seat_list = []
-        for seat in self.sorted_names:
+        if seat_locs is None:
+            if depth == 1:
+                return self.sorted_names
+            else:
+                if depth is not None:
+                    depth = depth - 1
+                seat_list = []
+                for seat in self.sorted_names:
+                    try:
+                        seats = self.seats[seat].get_locs(depth=depth)
+                        seat_list.extend([(seat, *s) for s in seats])
+                    except AttributeError:
+                        # This is a base level seat and does not need to be handled recursively
+                        seat_list.append((seat,))
+                return seat_list
+        else:
+            seat_list = []
+            for seat_loc in seat_locs:
+                # Get the seat referenced in seat_loc.  Use get_seats_as_list[0] instead of get_seats_as_seatgroup
+                # because the latter will preserve the entire structure (ie, get([(lvl1, lvl2, lvl3)]) returns a 3 lvl
+                # SeatGroup instead of just the SeatGroup at lvl3
+                # Get the list of seats in the location in question, then append the rest of the location back on the
+                # front of the tuple for full context
+                # seat_list.extend(self.get_seats_as_list([seat_loc])[0].get_locs(depth=depth))
+                these_seats = [(*seat_loc, *loc) for loc in self.get_seats_as_list([seat_loc])[0].get_locs(depth=depth)]
+                seat_list.extend(these_seats)
+            return seat_list
+
+    @property
+    def price(self):
+        """
+        Calculate the average price of all seats in the group and return the value.
+        Implemented as a property to mimic Seat.price
+
+        NOTE: Is a recursive implementation faster, or would using get_locs, get_seat_list, then sum prices faster?
+
+        :return: Float of average ticket price in the group
+        """
+        n = 0.0
+        price_sum = 0.0
+        for seatname in self.seats:
+            this_price = float(self.seats[seatname].price)
             try:
-                seats = self.seats[seat].get_locs()
-                seat_list.extend([(seat, *s) for s in seats])
-            except AttributeError:
-                # This is a base level seat and does not need to be handled recursively
-                seat_list.append((seat,))
-        return seat_list
+                this_n = len(self.seats[seatname])
+            except TypeError:
+                this_n = 1
+            n += this_n
+            price_sum += this_price * this_n
+        return price_sum / n
 
     @classmethod
     def init_from_event_json(cls, json_file):
