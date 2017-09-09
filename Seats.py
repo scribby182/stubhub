@@ -149,8 +149,8 @@ class SeatGroup(object):
                     self.seats[this_name].remove(name[1:], remove_deep_seats=remove_deep_seats)
                     if len(self.seats[this_name]) == 0 and cleanup_empty_groups:
                         # Remove the empty parent SeatGroup
-                        self.seats.pop(name)
-                        self.sorted_names.remove(name)
+                        self.seats.pop(this_name)
+                        self.sorted_names.remove(this_name)
                 else:
                     raise SeatGroupError("Cannot remove seat '{0}', remove_deep_seats is False".format(name))
                 return None
