@@ -15,6 +15,10 @@ class Event(object):
         self.datetime = None
         self.location = None
         self.meta = {} # For things like home/away team, etc.
+        self.sales = None
+        self.added = None
+        self.new_price = None
+        self.new_listid = None
 
     def add_meta(self, json_file):
         """
@@ -29,6 +33,13 @@ class Event(object):
     def add_timepoint(self, timepoint, json_file):
         """
         Add a SeatGroup timepoint to the event's chronology from a JSON formatted event file, identified by a timepoint
+
+        Possible improvement: Could update sales/add/... Chronologies for each seatgroup added.
+        Could run prev_diff = diff(this_timepoint, prev), next_diff = diff(next_timepoint, this_timepoint), then
+        sales.add(prev_diff, this_timepoint), sales.remove(next_diff), and sales.add(next_diff, next_timepoint).
+        Probably want this auto_update togglable, and group-adds could disable to avoid remaking sales infor that gets
+        rewritten immediately afterwards.
+
 
         :param timepoint: A datetime object (used as the key to identify the timepoint)
         :param json_file: Filename of a JSON file with event listings data
@@ -70,6 +81,13 @@ class Event(object):
                     print("DEBUG: {0} is not part of event {1} - skipping".format(fn, eventid))
             else:
                 print("DEBUG: {0} is not a file".format(fn))
+
+    def infer_chronological_changes(self):
+        diff = self.chronology.find_differences()
+        self.sales = diff['removed']
+        self.added = diff['added']
+        self.new_price = diff['new_price']
+        self.new_listid = diff['new_listid']
     # Properties
     # Add day_of_week property?
     # Add time of event/date of event, which pulls from the self.datetime?
