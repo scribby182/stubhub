@@ -123,17 +123,42 @@ class SeatGroup(object):
         else:
             raise SeatGroupError("Seat '{0}' must be a Seat or SeatGroup object - found {1}".format(name, type(seat)))
 
-    def remove(self, name):
+    def remove(self, name, remove_deep_seats=True, cleanup_empty_groups=True):
         """
         Remove a Seat of SeatGroup from the object
 
-        :param name:
+        :param name: Name of the seat to be removed.  Can be a tuple describing a nested seat of remove_deep_seats
+                     is True.
+        :param remove_deep_seats: Boolean.  If True, name can be a tuple referring to seats nested in deep SeatGroups
+        :param cleanup_empty_groups: Boolean.  If True, any recursive seat removal that leaves an empty SeatGroup will
+                                     also remove the empty parent SeatGroup.
         :return: None
         """
+        if isinstance(name, tuple) or isinstance(name, list):
+            # Seat being removed has multi-level name.  Could be len=1 (this level), len>1 (deeper level).
+            if len(name) == 1:
+                # This is the level where the seat should be added.  Just modify name binding and continue below
+                name = name[0]
+                # Note: This does not return, it continues below this if/else.  Flow is a little confusing, refactor?
+            else:
+                # Seat being removed is deeper than this group.  Recurse if allowed.
+                if remove_deep_seats:
+                    this_name = str(name[0])
+                    if this_name not in self.seats or this_name not in self.sorted_names:
+                        raise SeatGroupError("Seat \"{0}\" is not in this group - cannot remove".format(name))
+                    self.seats[this_name].remove(name[1:], remove_deep_seats=remove_deep_seats)
+                    if len(self.seats[this_name]) == 0 and cleanup_empty_groups:
+                        # Remove the empty parent SeatGroup
+                        self.seats.pop(name)
+                        self.sorted_names.remove(name)
+                else:
+                    raise SeatGroupError("Cannot remove seat '{0}', remove_deep_seats is False".format(name))
+                return None
+
         # Internally, names are always treated as strings
         name = str(name)
-
         try:
+            # Remove seat and its name
             self.seats.pop(name)
             self.sorted_names.remove(name)
         except (KeyError, ValueError):
@@ -222,13 +247,61 @@ class SeatGroup(object):
                 seat_list.extend(these_seats)
             return seat_list
 
+    def difference(self, other_sg):
+        """
+        Find the differences between this and other_sg and return them.
+
+        :param other_sg:
+        :return: Dict of added, removed, new_price, new_listid
+        """
+        # Get all seats from both SeatGroups
+        this_locs = self.get_locs()
+        other_locs = other_sg.get_locs()
+        all_locs = set(this_locs + other_locs)
+
+        res = {
+            'added': SeatGroup(),
+            'removed': SeatGroup(),
+            'new_price': SeatGroup(),
+            'new_listid': SeatGroup(),
+        }
+
+        # For each seat, find any differences
+        for loc in all_locs:
+            try:
+                this_seat = self.get_seats_as_list([loc])[0]
+            except KeyError:
+                this_seat = None
+            try:
+                other_seat = other_sg.get_seats_as_list([loc])[0]
+            except KeyError:
+                other_seat = None
+            if this_seat == other_seat:
+                continue
+            elif this_seat is None:
+                # Removed seat
+                res['removed'].add(other_seat, loc)
+            elif other_seat is None:
+                # Added seat
+                res['added'].add(this_seat, loc)
+            else:
+                # Could be more than one of these at a time
+                if this_seat.price != other_seat.price:
+                    # Price change
+                    res['new_price'].add(this_seat, loc)
+                if this_seat.list_id != other_seat.list_id:
+                    # Listid change (new listing)
+                    res['new_listid'].add(this_seat, loc)
+
+        return res
+
     @property
     def price(self):
         """
-        Calculate the average price of all seats in the group and return the value.
+        Return the average price of all seats in the group and return the value.
         Implemented as a property to mimic Seat.price
 
-        NOTE: Is a recursive implementation faster, or would using get_locs, get_seat_list, then sum prices faster?
+        NOTE: Is a recursive implementation faster, or would using get_locs, get_seat_list, then sum prices be faster?
 
         :return: Float of average ticket price in the group
         """
@@ -293,7 +366,7 @@ class SeatGroup(object):
                     local_seatNumbers = ["{0}-NaN{1}".format(list_id, next(seat_gen)) if x=="NaN" else x for x in seatNumbers.split(',')[:quantity]]
 
                 for seatNumber in local_seatNumbers:
-                    print('DEBUG: Creating seat with Price: {0} (face: {4}), Loc: ({1}, {2}, {3})'.format(price, section, row, seatNumber, facevalue))
+                    # print('DEBUG: Creating seat with Price: {0} (face: {4}), Loc: ({1}, {2}, {3})'.format(price, section, row, seatNumber, facevalue))
                     seat = Seat(price=price,
                                 list_id=list_id,
                                 facevalue=facevalue,
@@ -310,10 +383,11 @@ class SeatGroup(object):
 
 class SeatGroupChronology(object):
     """
-    Object for grouping many SeatGroups chronologically, as well as extracting time-based data
+    Object for grouping many SeatGroups chronologically and extracting time-based data
     """
     def __init__(self):
         self.seatgroups = {}
+        self.sorted_timepoints = []
 
     def add_seatgroup(self, timepoint, sg):
         """
@@ -328,6 +402,7 @@ class SeatGroupChronology(object):
         else:
             if isinstance(timepoint, datetime.datetime):
                 self.seatgroups[timepoint] = sg
+                bisect.insort(self.sorted_timepoints, timepoint)
             else:
                 raise SeatGroupError("Invalid timepoint {0} - must be a datetime object".format(timepoint))
 
@@ -352,6 +427,30 @@ class SeatGroupChronology(object):
         """
         print("DEBUG: Adding timepoint {0} from file {1}".format(timepoint, json_file))
         self.add_seatgroup(timepoint, SeatGroup.init_from_event_json(json_file))
+
+    def find_differences(self):
+        """
+        Compares all timepoints chronologically to determine sales, adds, price changes, and listings changes over time.
+
+        :return: None
+        """
+        added = SeatGroupChronology()
+        removed = SeatGroupChronology()
+        new_price = SeatGroupChronology()
+        new_listid = SeatGroupChronology()
+        for i in range(1, len(self.sorted_timepoints)):
+            this_t = self.sorted_timepoints[i]
+            prev_t = self.sorted_timepoints[i-1]
+            print("comparing {0} to {1}".format(this_t, prev_t))
+            diff = self.seatgroups[this_t].difference(self.seatgroups[prev_t])
+            for k in sorted(diff):
+                print('\t', k)
+                diff[k].display()
+            added.add_seatgroup(this_t, diff['added'])
+            removed.add_seatgroup(this_t, diff['removed'])
+            new_price.add_seatgroup(this_t, diff['new_price'])
+            new_listid.add_seatgroup(this_t, diff['new_listid'])
+        return {'added': added, 'removed': removed, 'new_price': new_price, 'new_listid': new_listid}
 
 # Exceptions
 class SeatGroupError(Exception):
