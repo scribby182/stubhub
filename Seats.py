@@ -1,3 +1,4 @@
+import numpy as np
 import datetime
 from pprint import pprint
 import bisect
@@ -451,6 +452,87 @@ class SeatGroupChronology(object):
             new_price.add_seatgroup(this_t, diff['new_price'])
             new_listid.add_seatgroup(this_t, diff['new_listid'])
         return {'added': added, 'removed': removed, 'new_price': new_price, 'new_listid': new_listid}
+
+    def get_lens(self):
+        """
+        Return a numpy array with rows of (timepoint, len(SG@timepoint)).
+
+        :return:
+        """
+        lens = [None] * len(self.sorted_timepoints)
+        # lens = np.empty((len(self.sorted_timepoints), 2))
+
+        for i, t in enumerate(self.sorted_timepoints):
+            # lens[i, :] = (t, len(self.seatgroups[t]))
+            lens[i] = (t, len(self.seatgroups[t]))
+        return np.array(lens)
+
+    def __getitem__(self, t, single_type='nearest'):
+        """
+        Get one or more elements of the SeatGroupChronology
+
+        A single entry is returned as a SeatGroup, whereas a slice is returned as a new SGC
+
+        Future: Interpret the step variable of the slice to return a series of SGC's with the slice.
+
+        :param t: A single timepoint in datetime format or a slice object between two timepoints (inclusive).
+        :param single_type: Type of search method for getting a single timepoint:
+                                nearest: (default) return the timepoint nearest to t, with ties always going to the
+                                         nearest timepoint to the left (before) t)
+                                exact: return the timepoint exactly matching t, or raise a KeyError exception
+                                left: return the timepoint that is nearest to t and before or equal to t.  Returns a
+                                      KeyError if there is no timepoint meeting this criteria.
+                                right: return the timepoint that is nearest to t and equal to or after t.  Returns a
+                                       KeyError if there is no timepoint meeting this criteria.
+        :return: A SeatGroup (single timepoint) or SeatGroupChronology (multiple timepoints)
+        """
+        if isinstance(t, slice):
+            # Interpret slice
+            start = bisect.bisect_left(self.sorted_timepoints, t.start)
+            stop =  bisect.bisect_right(self.sorted_timepoints, t.stop)
+            data = [(self.sorted_timepoints[i], self.seatgroups[self.sorted_timepoints[i]]) for i in range(start, stop)]
+            sgc_new = SeatGroupChronology()
+            for tp, sg in data:
+                sgc_new.add_seatgroup(tp, sg)
+            return sgc_new
+        elif isinstance(t, datetime.datetime):
+            # Interpret single timepoint
+            if single_type == 'exact':
+                t_ret = t
+                # return self.seatgroups[t]
+            elif single_type == 'nearest':
+                # Find where t would insert into self.sorted_timepoints, then compare the deltas
+                i = bisect.bisect_left(self.sorted_timepoints, t)
+                if i == 0:
+                    # Special case at the beginning
+                    t_ret = self.sorted_timepoints[i]
+                elif i == len(self.sorted_timepoints):
+                    # Special case at the end
+                    t_ret = self.sorted_timepoints[-1]
+                else:
+                    # All other cases
+                    d_left = t - self.sorted_timepoints[i-1]
+                    d_right = self.sorted_timepoints[i] - t
+                    if d_left <= d_right:
+                        t_ret = self.sorted_timepoints[i - 1]
+                    else:
+                        t_ret = self.sorted_timepoints[i]
+            elif single_type == 'left':
+                i = bisect.bisect_right(self.sorted_timepoints, t)
+                if i == 0:
+                    # Special case at the beginning
+                    raise KeyError("No timepoint to the left of {0}".format(t))
+                else:
+                    t_ret = self.sorted_timepoints[i - 1]
+            elif single_type == 'right':
+                i = bisect.bisect_left(self.sorted_timepoints, t)
+                if i == len(self.sorted_timepoints):
+                    # Special case at the beginning
+                    raise KeyError("No timepoint to the right of {0}".format(t))
+                else:
+                    t_ret = self.sorted_timepoints[i]
+            # Return as a single row 2D array
+            return np.array((t_ret, self.seatgroups[t_ret]))[None, :]
 
 # Exceptions
 class SeatGroupError(Exception):
