@@ -101,9 +101,11 @@ class SeatGroup(object):
         """
         return self.merge(other)
 
-    def add(self, seat, name, make_deep_groups=True):
+    def add(self, seat, name, make_deep_groups=True, merge=True):
         """
         Add a Seat ot SeatGroup to the object
+
+        For added SeatGroups, optionally merge with existing SeatGroup when a SeatGroup of the same name already exists.
 
         :param seat:
         :param name:
@@ -114,6 +116,9 @@ class SeatGroup(object):
                                  Will create a seatgroup sg that has a nested seatgroup sg.seats['rowA'], where the
                                  nested group contains 'some_seat'
                                  If False, will raise an exception if all subgroups do not already exist.
+        :param merge: Boolean for handling merging of SeatGroups.  If merge=True, seat is a SeatGroup, and name is
+                      already in use (name in self.seats.keys()), attempt to merge the two SeatGroups.  Raise a
+                      DuplicateSeatError if merger results in a conflict.
         :return: None
         """
         if not (isinstance(name, tuple) or isinstance(name, list)):
@@ -123,9 +128,26 @@ class SeatGroup(object):
             this_name = str(name[0])
             if len(name) == 1:
                 # This is the level where the seat should be added
-                if isinstance(seat, Seat) or isinstance(seat, SeatGroup):
+                if isinstance(seat, Seat):
                     if this_name in self.seats:
                         raise DuplicateSeatError("Seat \"{0}\" already in use".format(this_name))
+                    else:
+                        # Store the Seat and maintain a sorted list of names
+                        bisect.insort(self.sorted_names, this_name)
+                        self.seats[this_name] = seat
+                elif isinstance(seat, SeatGroup):
+                    if this_name in self.seats:
+                        if merge:
+                            # print("Adding SeatGroup to name already in use.  Attempting to merge SeatGroups")
+                            # print("New SeatGroup to add:")
+                            # seat.display()
+                            # print("SeatGroup {0} before merge: ".format(this_name))
+                            # self.seats[this_name].display()
+                            self.seats[this_name].merge(seat, handle_duplicates=False, inplace=True)
+                            # print("SeatGroup {0} after merge: ", this_name)
+                            # self.seats[this_name].display()
+                        else:
+                            raise DuplicateSeatError("Seat \"{0}\" already in use".format(this_name))
                     else:
                         # Store the Seat and maintain a sorted list of names
                         bisect.insort(self.sorted_names, this_name)
@@ -312,30 +334,19 @@ class SeatGroup(object):
                 prices = np.concatenate((prices, np.array((self.seats[name].price,))))
         return prices
 
-# TODO: DEBUG
-#    def parse_name(self, name):
-#        """
-#        Apply any necessary substitutions to the name and then return the parsed name
-#
-#        :param name: Name to be parsed
-#        :return: String name after parsing
-#        """
-#        name = str(name)
-#        for old, new in self.namemap:
-#            name = re.sub(old, new, name)
-#        return name
 
-    def merge(self, other, handle_duplicates = False):
+    def merge(self, other, inplace=False, handle_duplicates = False):
         """
         Merge two SeatGroups together, including nested Seats and SeatGroups, returning a new SeatGroup.
 
         Raises an exception if any duplicate seats are detected.
 
         :param other: Another SeatGroup
+        :param inplace: Boolean.  Whether to merge to this object inplace or return a new SG
         :param handle_duplicates: If False, raises exception when duplicates detected.
                                   If self, always uses the seat from this SeatGroup when duplicates are found
                                   If other, always uses the seat from the other SeatGroup when duplicates are found
-        :return: A new SeatGroup
+        :return: A new SeatGroup if inplace=False, else None
         """
         if handle_duplicates:
             raise NotImplementedError()
@@ -346,12 +357,16 @@ class SeatGroup(object):
 
             locs_both = [loc for loc in locs_this if loc in locs_other]
             if len(locs_both) > 0:
-                raise SeatGroupError("Found duplicate seats when merging: {0}".format(locs_both))
-        sg = self.get_seats_as_seatgroup(locs_this)
+                raise DuplicateSeatError("Found duplicate seats when merging: {0}".format(locs_both))
+        if inplace:
+            sg = self
+        else:
+            sg = self.get_seats_as_seatgroup(locs_this)
         merged_seats = zip(locs_other, other.get_seats_as_list(locs_other))
         for loc, seat in merged_seats:
             sg.add(seat, loc)
-        return sg
+        if not inplace:
+            return sg
 
     def update_names(self, namemap=None, depth=None):
         """
@@ -376,20 +391,24 @@ class SeatGroup(object):
                 if go_deep:
                     self.seats[name].update_names(namemap=namemap, depth=depth)
 
-            # Update names at this level
+            # Find all names that match criteria at this level and rename them and/or merge with existing SeatGroups
             for pattern, repl in namemap:
-                print("Replacing {0} with {1}".format(pattern, repl))
+                # print("Running search to replace {0} with {1}".format(pattern, repl))
                 pat_comp = re.compile(pattern)
                 to_replace = []
+                # First build list of items needing replacing, then do actual replacement.  Combining these would change
+                # the order/placement in sorted_names.
                 for name in self.sorted_names:
                     match = pat_comp.search(name)
                     if match:
-                        print("found match in {0}".format(name))
+                        # print("SG.update_names: Found {0} in {1}, adding to to_replace queue".format(pattern, name))
                         to_replace.append((name, pat_comp.sub(repl, name)))
+                # Perform renames
                 for oldname, newname in to_replace:
-                    print("Swapping {0} with {1}".format(oldname, newname))
+                    # print("SG.update_names: Changing \"{0}\" to \"{2}\" in {1}".format(pattern, name, repl))
+                    # print("\tChanging {0} with {1}".format(oldname, newname))
                     temp = self.seats[oldname]
-                    print("got temp: ", temp)
+                    # print("got temp: ", temp)
                     self.remove((oldname,))
                     self.add(temp, (newname,))
 
@@ -540,12 +559,14 @@ class SeatGroupChronology(object):
             print(tp)
             self.seatgroups[tp].display()
 
-    def add_seatgroup(self, timepoint, sg):
+    def add_seatgroup(self, timepoint, sg, update_names=None):
         """
         Add a SeatGroup to the object, checking if another of the same timepoint already exists.
 
         :param timepoint: datetime object identifying the SeatGroup (used as the key for storing data)
         :param sg: SeatGroup to be added
+        :param update_names: If not None, invokes sg.update_names(update_names) to update any Seat names in the
+                             SeatGroup.  Useful for data munging.
         :return: None
         """
         if timepoint in self.seatgroups:
@@ -553,11 +574,13 @@ class SeatGroupChronology(object):
         else:
             if isinstance(timepoint, datetime.datetime):
                 self.seatgroups[timepoint] = sg
+                if update_names is not None:
+                    self.seatgroups[timepoint].update_names(update_names)
                 bisect.insort(self.sorted_timepoints, timepoint)
             else:
                 raise SeatGroupError("Invalid timepoint {0} - must be a datetime object".format(timepoint))
 
-    def add_seatgroups_from_event_json(self, timepoints, json_files):
+    def add_seatgroups_from_event_json(self, timepoints, json_files, update_names=None):
         """
         Add a seatgroup from a list of JSON formatted even files and their timepoint identifiers.
 
@@ -566,9 +589,9 @@ class SeatGroupChronology(object):
         :return: None
         """
         for timepoint, json_file in zip(timepoints, json_files):
-            self.add_seatgroup_from_event_json(timepoint, json_file)
+            self.add_seatgroup_from_event_json(timepoint, json_file, update_names=update_names)
 
-    def add_seatgroup_from_event_json(self, timepoint, json_file):
+    def add_seatgroup_from_event_json(self, timepoint, json_file, update_names=None):
         """
         Add a SeatGroup from a JSON formatted event file, identified by a timepoint key.
 
@@ -577,7 +600,7 @@ class SeatGroupChronology(object):
         :return: None
         """
         print("DEBUG: Adding timepoint {0} from file {1}".format(timepoint, json_file))
-        self.add_seatgroup(timepoint, SeatGroup.init_from_event_json(json_file))
+        self.add_seatgroup(timepoint, SeatGroup.init_from_event_json(json_file), update_names=update_names)
 
     def find_differences(self):
         """

@@ -19,6 +19,7 @@ class Event(object):
         self.added = None
         self.new_price = None
         self.new_listid = None
+        self.namemap = [] # For holding any common seat name remapping.  See subclasses below for example
 
     def add_meta(self, json_file):
         """
@@ -30,7 +31,7 @@ class Event(object):
         # formats to a standard dict?
         raise NotImplementedError()
 
-    def add_timepoint(self, timepoint, json_file):
+    def add_timepoint(self, timepoint, json_file, update_names=True):
         """
         Add a SeatGroup timepoint to the event's chronology from a JSON formatted event file, identified by a timepoint
 
@@ -43,12 +44,13 @@ class Event(object):
 
         :param timepoint: A datetime object (used as the key to identify the timepoint)
         :param json_file: Filename of a JSON file with event listings data
+        :param update_names: If true, invoke
         :return: None
         """
-        self.chronology.add_seatgroup_from_event_json(timepoint, json_file)
+        self.chronology.add_seatgroup_from_event_json(timepoint, json_file, update_names=self.namemap)
 
 
-    def scrape_timepoints_from_dir(self, eventid, directory):
+    def scrape_timepoints_from_dir(self, eventid, directory, update_names=True):
         """
         Scrapes directory for JSON listings files of format "eventid_YYYY-MM-DD_hh-mm-ss.json" and adds them to event.
 
@@ -76,7 +78,7 @@ class Event(object):
                             fn))
                     continue
                 if this_id == eventid:
-                    self.add_timepoint(this_time, full_fn)
+                    self.add_timepoint(this_time, full_fn, update_names=update_names)
                 else:
                     print("DEBUG: {0} is not part of event {1} - skipping".format(fn, eventid))
             else:
@@ -97,7 +99,7 @@ class Panthers(Event):
         super().__init__(*args, **kwargs)
         self.namemap = [
             (r'(?i)\s*Club\s*', ''),
-            (r'(?i)\s*I+\s*', ''),
+            (r'(?i)\s*I+\s+', ''),
             (r'(?i)\s*Terrace\s*', ''),
             (r'(?i)\s*lower\s*', ''),
             (r'(?i)\s*middle\s*', ''),
