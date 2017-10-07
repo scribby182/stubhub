@@ -92,6 +92,21 @@ class Event(object):
     # Add day_of_week property?
     # Add time of event/date of event, which pulls from the self.datetime?
 
+class Panthers(Event):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.namemap = [
+            (r'(?i)\s*Club\s*', ''),
+            (r'(?i)\s*I+\s*', ''),
+            (r'(?i)\s*Terrace\s*', ''),
+            (r'(?i)\s*lower\s*', ''),
+            (r'(?i)\s*middle\s*', ''),
+            (r'(?i)\s*upper\s*', ''),
+            (r'(?i)\s*end zone\s*', ''),
+            (r'(?i)\s*premium\s*', ''),
+            (r'(?i)\s*sideline\s*', ''),
+        ]
+
 # Exceptions
 class EventError(Exception):
     pass
