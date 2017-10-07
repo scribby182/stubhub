@@ -276,7 +276,8 @@ class StubHub_API(object):
         def safe_get():
             try:
                 inv = StubHub_API_Request.request('get', self.url_inventory_search, headers=self.standard_headers, params=params, wait=True).json()
-            except StubHub_API_Request_Error as e:
+                inv['listing'] # Check if you got anything back (sometimes this key is missing)
+            except (StubHub_API_Request_Error, KeyError) as e:
                 warn("Warning: During get_event_inventory() caught StubHub_API_Request_Error \"{0}\".  No results returned.".format(e), warnfile)
                 raise GetListingsError("Error in StubHub_API_Request during listings access for event {0}.  Caught exception \"{1}\"".format(eventid, e))
             return inv
