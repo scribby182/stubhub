@@ -3,15 +3,19 @@ import datetime
 from pprint import pprint
 import bisect
 import json
+import re
 
 class Seat(object):
     """
     Object to hold data associated with a single seat
     """
     def __init__(self, price=None, available=None, facevalue=None, list_id=None):
+        self._price = None
         self.price = price
+        self._facevalue = None
         self.facevalue = facevalue
         self.available = available
+        self._list_id = None
         self.list_id = list_id
         # These are what are used in evaluating equality.  Put them up here so I don't forget to add to the list
         # if we add new attributes
@@ -37,6 +41,16 @@ class Seat(object):
     def __repr__(self):
         return "{0}(price={1}, available={2})".format(type(self).__name__, self.price, self.available)
 
+    @property
+    def price(self):
+        return self._price
+
+    @price.setter
+    def price(self, price):
+        if price is None:
+            self._price = None
+        else:
+            self._price = float(price)
 
 class SeatGroup(object):
     """
@@ -78,6 +92,15 @@ class SeatGroup(object):
         # If I get here, we're all the same!
         return True
 
+    def __add__(self, other):
+        """
+        Merge two SeatGroups together using the merge() method, returning a new SeatGroup.
+
+        :param other: Another SeatGroup
+        :return: A new SeatGroup
+        """
+        return self.merge(other)
+
     def add(self, seat, name, make_deep_groups=True):
         """
         Add a Seat ot SeatGroup to the object
@@ -93,36 +116,35 @@ class SeatGroup(object):
                                  If False, will raise an exception if all subgroups do not already exist.
         :return: None
         """
-        if isinstance(name, tuple) or isinstance(name, list):
+        if not (isinstance(name, tuple) or isinstance(name, list)):
+            raise SeatGroupError("Cannot add Seat - invalid name.  Must be iterable, but got: {0}".format(name))
+        else:
             # Seat being added has multi-level name.  Could be len=1 (this level), len>1 (deeper level).
+            this_name = str(name[0])
             if len(name) == 1:
-                # This is the level where the seat should be added.  Just modify name binding and continue below
-                name = name[0]
-                # Note: This does not return, it continues below this if/else.  Flow is a little confusing, refactor?
+                # This is the level where the seat should be added
+                if isinstance(seat, Seat) or isinstance(seat, SeatGroup):
+                    if this_name in self.seats:
+                        raise DuplicateSeatError("Seat \"{0}\" already in use".format(this_name))
+                    else:
+                        # Store the Seat and maintain a sorted list of names
+                        bisect.insort(self.sorted_names, this_name)
+                        self.seats[this_name] = seat
+                else:
+                    raise SeatGroupError(
+                        "Seat '{0}' must be a Seat or SeatGroup object - found {1}".format(this_name, type(seat)))
+                    # Note: This does not return, it continues below this if/else.  Flow is a little confusing, refactor?
             else:
                 # Seat is added deeper than this group.  Check if it exists (and optionally create it), then recurse
                 this_name = str(name[0])
                 if not this_name in self.seats:
                     if make_deep_groups:
                         sg = SeatGroup()
-                        self.add(seat=sg, name=this_name)
+                        self.add(seat=sg, name=(this_name,))
                     else:
                         raise SeatGroupError("Cannot add seat '{0}', SeatGroup '{1}' not defined".format(name, name[0]))
                 self.seats[this_name].add(seat, name[1:], make_deep_groups=make_deep_groups)
                 return
-
-        # Internally, names are always treated as strings
-        name = str(name)
-
-        if isinstance(seat, Seat) or isinstance(seat, SeatGroup):
-            if name in self.seats:
-                raise DuplicateSeatError("Seat \"{0}\" already in use".format(name))
-            else:
-                # Store the Seat and maintain a sorted list of names
-                bisect.insort(self.sorted_names, name)
-                self.seats[name] = seat
-        else:
-            raise SeatGroupError("Seat '{0}' must be a Seat or SeatGroup object - found {1}".format(name, type(seat)))
 
     def remove(self, name, remove_deep_seats=True, cleanup_empty_groups=True):
         """
@@ -176,7 +198,7 @@ class SeatGroup(object):
         for s in zip(locs, seats):
             print(s)
 
-    def get_seats_as_seatgroup(self, seat_locs):
+    def get_seats_as_seatgroup(self, seat_locs, fail_if_missing=True):
         """
         Return a SeatGroup of seats described by an iterable of seat location tuples.
 
@@ -186,14 +208,17 @@ class SeatGroup(object):
         :param seat_locs:
         :return:
         """
-        seats_as_list = self.get_seats_as_list(seat_locs)
+        seats_as_list = self.get_seats_as_list(seat_locs, fail_if_missing=fail_if_missing)
         seats = zip(seat_locs, seats_as_list)
         newsg = SeatGroup()
         for loc, seat in seats:
-            newsg.add(seat, loc)
+            if seat is None:
+                continue
+            else:
+                newsg.add(seat, loc)
         return newsg
 
-    def get_seats_as_list(self, seat_locs):
+    def get_seats_as_list(self, seat_locs, fail_if_missing=True):
         """
         Return a list of seats described by an iterable of seat location tuples
 
@@ -206,11 +231,24 @@ class SeatGroup(object):
             if not (isinstance(loc, tuple) or isinstance(loc, list)):
                 raise SeatGroupError("Invalid seat_loc - must be a list of tuples")
             elif len(loc) == 1:
-                returned[i] = self.seats[loc[0]]
+                try:
+                    # Locations are always strings
+                    returned[i] = self.seats[str(loc[0])]
+                except KeyError as e:
+                    if fail_if_missing:
+                        raise e
+                    else:
+                        # Redundant, but makes it really clear...
+                        returned[i] = None
             else:
                 try:
                     # Get will return a list of seats of length 1, but we just want the seat
-                    returned[i] = self.seats[loc[0]].get_seats_as_list([loc[1:]])[0]
+                    returned[i] = self.seats[str(loc[0])].get_seats_as_list([loc[1:]])[0]
+                except KeyError as e:
+                    if fail_if_missing:
+                        raise e
+                    else:
+                        returned[i] = None
                 except AttributeError:
                     raise SeatGroupError("Seat '{0}' is a Seat but was used as a SeatGroup with location '{1}'".format(loc[0], loc))
         return returned
@@ -218,6 +256,9 @@ class SeatGroup(object):
     def get_locs(self, seat_locs=None, depth=None):
         """
         Returns a list of tuples identifying all the seats in this SeatGroup, including seats nested in other SeatGroups
+
+        Results returned in sorted order.
+        :seat_locs: (I think) Subset of the SeatGroup to be searched
         :return:
         """
         if seat_locs is None:
@@ -247,6 +288,110 @@ class SeatGroup(object):
                 these_seats = [(*seat_loc, *loc) for loc in self.get_seats_as_list([seat_loc])[0].get_locs(depth=depth)]
                 seat_list.extend(these_seats)
             return seat_list
+
+    def get_prices(self):
+        """
+        Return a numpy array of prices in the SG, including nested seats.  These are in the same order as get_locs.
+
+        Future: There must be a better way to do this.  Concatenation for np.arrays is slow...
+                Feels like I'm cramming numpy arrays into a life as a dynamic array..
+                Non-recursive approach building a list then converting to np.array make more sense?
+        Future: Should these always return the seat name with the price?  Other price-returning methods in SGC and
+                elsewhere return a record array of [[timepoint, price], [timepoint, price]...] because the order is non-
+                trivial (there could be some timepoints without any sales and thus no price is returned, or timepoints
+                where multiple prices are returned).  Adopt same convention here?
+
+        :return: A numpy array of prices, in the same order as get_locs()
+        """
+        prices = np.array(())
+        for name in self.sorted_names:
+            try:
+                deep_prices = self.seats[name].get_prices()
+                prices = np.concatenate((prices, deep_prices))
+            except AttributeError:
+                prices = np.concatenate((prices, np.array((self.seats[name].price,))))
+        return prices
+
+# TODO: DEBUG
+#    def parse_name(self, name):
+#        """
+#        Apply any necessary substitutions to the name and then return the parsed name
+#
+#        :param name: Name to be parsed
+#        :return: String name after parsing
+#        """
+#        name = str(name)
+#        for old, new in self.namemap:
+#            name = re.sub(old, new, name)
+#        return name
+
+    def merge(self, other, handle_duplicates = False):
+        """
+        Merge two SeatGroups together, including nested Seats and SeatGroups, returning a new SeatGroup.
+
+        Raises an exception if any duplicate seats are detected.
+
+        :param other: Another SeatGroup
+        :param handle_duplicates: If False, raises exception when duplicates detected.
+                                  If self, always uses the seat from this SeatGroup when duplicates are found
+                                  If other, always uses the seat from the other SeatGroup when duplicates are found
+        :return: A new SeatGroup
+        """
+        if handle_duplicates:
+            raise NotImplementedError()
+        else:
+            # First check for duplicates
+            locs_this = self.get_locs()
+            locs_other = other.get_locs()
+
+            locs_both = [loc for loc in locs_this if loc in locs_other]
+            if len(locs_both) > 0:
+                raise SeatGroupError("Found duplicate seats when merging: {0}".format(locs_both))
+        sg = self.get_seats_as_seatgroup(locs_this)
+        merged_seats = zip(locs_other, other.get_seats_as_list(locs_other))
+        for loc, seat in merged_seats:
+            sg.add(seat, loc)
+        return sg
+
+    def update_names(self, namemap=None, depth=None):
+        """
+        Update names of the nested SeatGroups and Seats based on namemap.
+
+        :param namemap: List of tuples of (regex_formatted_pattern, repl)
+        :param depth: Depth to which the names should be updated in the nested SeatGroups (depth = 1 renames only the
+                      Seats/Groups in self.  depth = 2 renames self and the Seats/Groups one further level deep.
+                      depth==None renames all nested items)
+        :return: None
+        """
+        for name in self.sorted_names:
+            # update names at deeper levels if requested (double if statment to handle depth=None.
+            if isinstance(self.seats[name], SeatGroup):
+                if depth is None:
+                    go_deep = True
+                elif depth > 1:
+                    go_deep = True
+                    depth = depth - 1
+                else:
+                    go_deep = False
+                if go_deep:
+                    self.seats[name].update_names(namemap=namemap, depth=depth)
+
+            # Update names at this level
+            for pattern, repl in namemap:
+                print("Replacing {0} with {1}".format(pattern, repl))
+                pat_comp = re.compile(pattern)
+                to_replace = []
+                for name in self.sorted_names:
+                    match = pat_comp.search(name)
+                    if match:
+                        print("found match in {0}".format(name))
+                        to_replace.append((name, pat_comp.sub(repl, name)))
+                for oldname, newname in to_replace:
+                    print("Swapping {0} with {1}".format(oldname, newname))
+                    temp = self.seats[oldname]
+                    print("got temp: ", temp)
+                    self.remove((oldname,))
+                    self.add(temp, (newname,))
 
     def difference(self, other_sg):
         """
@@ -390,6 +535,11 @@ class SeatGroupChronology(object):
         self.seatgroups = {}
         self.sorted_timepoints = []
 
+    def display(self):
+        for tp in self.sorted_timepoints:
+            print(tp)
+            self.seatgroups[tp].display()
+
     def add_seatgroup(self, timepoint, sg):
         """
         Add a SeatGroup to the object, checking if another of the same timepoint already exists.
@@ -411,8 +561,8 @@ class SeatGroupChronology(object):
         """
         Add a seatgroup from a list of JSON formatted even files and their timepoint identifiers.
 
-        :param timepoints: See add_timepoint (simular version of this function)
-        :param json_files: See add_timepoint (simular version of this function)
+        :param timepoints: See add_timepoint (similar version of this function)
+        :param json_files: See add_timepoint (similar version of this function)
         :return: None
         """
         for timepoint, json_file in zip(timepoints, json_files):
@@ -474,7 +624,8 @@ class SeatGroupChronology(object):
         A single entry is returned as a SeatGroup, whereas a slice is returned as a new SGC
 
         Future: Interpret the step variable of the slice to return a series of SGC's with the slice.
-
+        Future: Make companion get that returns just the timepoint that meets the single get criteria (that way you can
+                know which SeatGroup you got dring single gets)
         :param t: A single timepoint in datetime format or a slice object between two timepoints (inclusive).
         :param single_type: Type of search method for getting a single timepoint:
                                 nearest: (default) return the timepoint nearest to t, with ties always going to the
@@ -531,8 +682,20 @@ class SeatGroupChronology(object):
                     raise KeyError("No timepoint to the right of {0}".format(t))
                 else:
                     t_ret = self.sorted_timepoints[i]
-            # Return as a single row 2D array
-            return np.array((t_ret, self.seatgroups[t_ret]))[None, :]
+            return self.seatgroups[t_ret]
+
+    def slice_by_seat(self, seat_locs):
+        """
+        Return a new SGC that contains only content from the specified locations.
+
+        :param seat_locs: List of location tuples of the format required by SeatGroup.get_seats_as_seatgroup()
+        :return: SeatGroupChronology type object
+        """
+        sgc = SeatGroupChronology()
+        for tp in self.sorted_timepoints:
+            sg = self.seatgroups[tp].get_seats_as_seatgroup(seat_locs, fail_if_missing=False)
+            sgc.add_seatgroup(tp, sg)
+        return sgc
 
 # Exceptions
 class SeatGroupError(Exception):
