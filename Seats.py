@@ -617,6 +617,58 @@ class SeatGroupChronology(object):
             lens[i] = (t, len(self.seatgroups[t]))
         return np.array(lens)
 
+    def get_prices(self, f=np.min, return_type='numpy'):
+        """
+
+        Future: Merge all price_type scalar options into the same returned numpy record array?  Would save computation,
+                but mess with the sgc return type option (multiple entries with min, max, avg in a SGC would be
+                impossible to use).
+
+        :param f:   Function to be applied to the prices returned for each timepoint's SeatGroup.  Default is np.min to
+                    return minimum seat price in the SG, but could be np.max, np.average, or None (to return all prices)
+                    Note: This function is only appled if len(prices) returned from the SG is greater than zero.
+        :param return_type: Type of data to be returned:
+                                numpy: a numpy record array with columns of timepoint and price (note that if
+                                       f==None, each price is returned in a separate row (thus timepoint may
+                                       not be unique)), ie if timepoint1 has two seats with prices price1a and price1b:
+                                        return = [[timepoint1, price1a], [timepoint1, price1b]]
+                                (not implemented) sgc: a SGC that includes dummy seats with the requested price_type (redundant if
+                                     price_type=='all')
+        :return:
+        """
+        if return_type == 'sgc':
+            raise NotImplementedError("...")
+        elif return_type == 'numpy':
+            # Is there a good way to avoid dynamically allocating the array here?  You might have 0, 1, or many entries for
+            # each timepoint...
+            data = []
+
+            for tp in self.sorted_timepoints:
+                print("Handling timepoint: ", tp)
+                prices = self.seatgroups[tp].get_prices()
+                print("Found prices: ")
+                pprint(prices)
+
+                if f is not None and len(prices) > 0:
+                    prices = f(prices)
+                data.append((tp, prices))
+
+            # Flatten the data if needed
+            # I think this way dynamically allocates the array during flattening, but couldn't think of how to do it easily
+            # without dynamic allocation
+            data = [(label, el) for label, sublst in data
+                                  for el in (sublst if hasattr(sublst, "__iter__") else [sublst])]
+
+            # Convert to np record array
+            # Used general object here instead of datetime64 because matplotlib recognizes datetime but not datetime64
+            data = np.rec.array(data,
+                                # dtype=[('timepoint', 'datetime64[us]'), ('price', 'float')])
+                                dtype=[('timepoint', 'O'), ('price', 'float')])
+        else:
+            raise ValueError("Invalid return type \"{0}\"".format(return_type))
+        return data
+
+
     def __getitem__(self, t, single_type='nearest'):
         """
         Get one or more elements of the SeatGroupChronology
