@@ -4,6 +4,7 @@ from pprint import pprint
 import bisect
 import json
 import re
+import copy
 
 class Seat(object):
     """
@@ -92,14 +93,87 @@ class SeatGroup(object):
         # If I get here, we're all the same!
         return True
 
-    def __add__(self, other):
+    # def __add__(self, other):
+    #     """
+    #
+    #     Merge two SeatGroups together using the merge() method, returning a new SeatGroup.
+    #
+    #     :param other: Another SeatGroup
+    #     :return: A new SeatGroup
+    #     """
+    #     return self.merge(other)
+    def math_operation(self, other, operation='add', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
         """
-        Merge two SeatGroups together using the merge() method, returning a new SeatGroup.
+        Return a new SeatGroup populated by seats priced as the difference (self.seats[some_seat] - other).
 
-        :param other: Another SeatGroup
-        :return: A new SeatGroup
+        Other can be a fixed value (int, float, or Seat), or can be another SeatGroup.  If a SeatGroup, all seat_locs must be
+        in both SeatGroups, else an exception is raised
+
+        :param other: Either a fixed value (int, float, or Seat) or a SeatGroup
+        :param seat_locs: Locations to include in differencing.
+        :param preserve_unreferenced_seats:
+            If True, returned SeatGroup also includes copies of all of self's seats not referenced in seat_locs (but
+            only seats in seat_locs are modified by the subtraction)
+            If False, returned SeatGroup includes only seats referenced in seat_locs.
+        :param inplace: Does subtraction inplace instead of returning a copy
+        :return: A SeatGroup
         """
-        return self.merge(other)
+        if seat_locs is None:
+            seat_locs = self.get_locs()
+
+        if preserve_unreferenced_seats:
+            all_seat_locs = self.get_locs()
+        else:
+            all_seat_locs = seat_locs
+
+        if inplace:
+            raise NotImplementedError("Need to implement and think about concequences for inplace==True + preserve_unreferenced_seats==False")
+
+        # If SeatGroup had any other data, this would be better served by a real .copy() method (maybe one that accepts
+        # seat_locs to copy subsets).  But this works almost as well
+        newsg = self.get_seats_as_seatgroup(seat_locs=all_seat_locs, copy_seats=True)
+
+        # Make a list of other's seats needed here.
+        # Try to use other as a SeatGroup, then as a Seat, then as a price
+        try:
+            other_seats = other.get_seats_as_list(seat_locs)
+        except AttributeError:
+            try:
+                price = other.price
+            except AttributeError:
+                price = other
+            other_seats = [Seat(price)] * len(seat_locs)
+
+        seats = newsg.get_seats_as_list(seat_locs)
+
+        for i in range(len(seats)):
+            if operation == 'add':
+                seats[i].price = seats[i].price + other_seats[i].price
+            elif operation == 'subtract':
+                seats[i].price = seats[i].price - other_seats[i].price
+
+        return newsg
+
+
+    def subtract(self, other, seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
+        """
+        Return a new SeatGroup populated by seats priced as the difference (self.seats[some_seat] - other).
+
+        Other can be a fixed value (int, float, or Seat), or can be another SeatGroup.  If a SeatGroup, all seat_locs must be
+        in both SeatGroups, else an exception is raised
+
+        :param other: Either a fixed value (int, float, or Seat) or a SeatGroup
+        :param seat_locs: Locations to include in differencing.
+        :param preserve_unreferenced_seats:
+            If True, returned SeatGroup also includes copies of all of self's seats not referenced in seat_locs (but
+            only seats in seat_locs are modified by the subtraction)
+            If False, returned SeatGroup includes only seats referenced in seat_locs.
+        :param inplace: Does subtraction inplace instead of returning a copy
+        :return: A SeatGroup
+        """
+        return self.math_operation(other, operation='subtract', seat_locs=seat_locs,
+                                   preserve_unreferenced_seats=preserve_unreferenced_seats, inplace=inplace)
+
 
     def add(self, seat, name, make_deep_groups=True, merge=True):
         """
@@ -220,7 +294,7 @@ class SeatGroup(object):
         for s in zip(locs, seats):
             print(s)
 
-    def get_seats_as_seatgroup(self, seat_locs, fail_if_missing=True):
+    def get_seats_as_seatgroup(self, seat_locs, fail_if_missing=True, copy_seats=False):
         """
         Return a SeatGroup of seats described by an iterable of seat location tuples.
 
@@ -228,9 +302,11 @@ class SeatGroup(object):
         they are returned in a similar way in the new SeatGroup
 
         :param seat_locs:
+        :param fail_if_missing: Raise exception if a seat in seat_locs does not exist
+        :param copy_seats: If True, return copies of the seats instead of references
         :return:
         """
-        seats_as_list = self.get_seats_as_list(seat_locs, fail_if_missing=fail_if_missing)
+        seats_as_list = self.get_seats_as_list(seat_locs, fail_if_missing=fail_if_missing, copy_seats=copy_seats)
         seats = zip(seat_locs, seats_as_list)
         newsg = SeatGroup()
         for loc, seat in seats:
@@ -240,11 +316,13 @@ class SeatGroup(object):
                 newsg.add(seat, loc)
         return newsg
 
-    def get_seats_as_list(self, seat_locs, fail_if_missing=True):
+    def get_seats_as_list(self, seat_locs, fail_if_missing=True, copy_seats=False):
         """
         Return a list of seats described by an iterable of seat location tuples
 
         :param seat_locs:
+        :param fail_if_missing: Raise exception if a seat in seat_locs does not exist
+        :param copy_seats: If True, return copies of the seats instead of references
         :return: List of seat objects
         """
         # TODO: Add wildcards, ie: loc=(section1, rowA, *)?  Or can this be covered by just get(loc=(section1, rowA)) then an action on that new group?
@@ -255,7 +333,10 @@ class SeatGroup(object):
             elif len(loc) == 1:
                 try:
                     # Locations are always strings
-                    returned[i] = self.seats[str(loc[0])]
+                    if copy_seats:
+                        returned[i] = copy.deepcopy(self.seats[str(loc[0])])
+                    else:
+                        returned[i] = self.seats[str(loc[0])]
                 except KeyError as e:
                     if fail_if_missing:
                         raise e
