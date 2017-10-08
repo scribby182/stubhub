@@ -548,6 +548,36 @@ class SeatGroup(object):
         return sg
 
 
+class SeatGroupFixedPrice(SeatGroup):
+    """
+    SeatGroup-like object that contains only a single seat and returns that seat whenever any seat name is requested.
+    """
+    def __init__(self):
+        super().__init__()
+        self.master_seat_name = ('*',)
+
+    def add(self, seat, *args, **kwargs):
+        """
+        Add the seat provided to the single named seat "*" using SeatGroup.add()
+        :param seat:
+        :param name:
+        :param make_deep_groups:
+        :param merge:
+        :return:
+        """
+        super().add(seat, self.master_seat_name, *args, **kwargs)
+
+    def get_seats_as_list(self, seat_locs, fail_if_missing=True):
+        """
+        Mimic SeatGroup's function by returning a list of Seats of length len(seat_locs), but all elements reference .seats['*"]
+
+        :param seat_locs:
+        :param fail_if_missing: Ignored (here only for matching parent's signature
+        :return: List of references to .seats["*"] of length len(seat_locs)
+        """
+        return [self.seats[self.master_seat_name[0]]] * len(seat_locs)
+
+
 class SeatGroupChronology(object):
     """
     Object for grouping many SeatGroups chronologically and extracting time-based data
