@@ -95,6 +95,7 @@ class Event(object):
     # Add time of event/date of event, which pulls from the self.datetime?
 
 class Panthers(Event):
+    # TODO: This catches most bad names, but a few like "Gridiron" and "side" (from "lower side") still slip through.  Add a "remove seats like this" feature?
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.namemap = [

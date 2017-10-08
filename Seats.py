@@ -416,6 +416,8 @@ class SeatGroup(object):
         """
         Find the differences between this and other_sg and return them.
 
+        TODO: Break this down into difference_added(), difference_new_price(), ..., so you don't call them all at once unnecessarily.  Have difference() call the others, and have everything accept an optional all_locs which will force the func to only consider a subset of seats
+
         :param other_sg:
         :return: Dict of added, removed, new_price, new_listid
         """
