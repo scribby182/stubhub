@@ -18,8 +18,8 @@ class Seat(object):
         self.available = available
         self._list_id = None
         self.list_id = list_id
-        # These are what are used in evaluating equality.  Put them up here so I don't forget to add to the list
-        # if we add new attributes
+        # These are what are used in evaluating equality.  Put them up here so I don't forget to add_seat to the list
+        # if we add_seat new attributes
         self._equality_attributes = ['price', 'facevalue', 'available', 'list_id']
 
     def __eq__(self, other):
@@ -102,7 +102,7 @@ class SeatGroup(object):
     #     :return: A new SeatGroup
     #     """
     #     return self.merge(other)
-    def math_operation(self, other, operation='add', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
+    def math_operation(self, other, operation='add_seat', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
         """
         Return a new SeatGroup populated by seats priced as the difference (self.seats[some_seat] - other).
 
@@ -147,7 +147,7 @@ class SeatGroup(object):
         seats = newsg.get_seats_as_list(seat_locs)
 
         for i in range(len(seats)):
-            if operation == 'add':
+            if operation == 'add_seat':
                 seats[i].price = seats[i].price + other_seats[i].price
             elif operation == 'subtract':
                 seats[i].price = seats[i].price - other_seats[i].price
@@ -175,7 +175,7 @@ class SeatGroup(object):
                                    preserve_unreferenced_seats=preserve_unreferenced_seats, inplace=inplace)
 
 
-    def add(self, seat, name, make_deep_groups=True, merge=True):
+    def add_seat(self, seat, name, make_deep_groups=True, merge=True):
         """
         Add a Seat ot SeatGroup to the object
 
@@ -186,7 +186,7 @@ class SeatGroup(object):
         :param make_deep_groups: If True, if a seat is added to a SeatGroup that does not exist, that group will be
                                  created.  ie:
                                     sg = SeatGroup()
-                                    sg.add(some_seat, (rowA, seat1), make_deep_groups=True)
+                                    sg.add_seat(some_seat, (rowA, seat1), make_deep_groups=True)
                                  Will create a seatgroup sg that has a nested seatgroup sg.seats['rowA'], where the
                                  nested group contains 'some_seat'
                                  If False, will raise an exception if all subgroups do not already exist.
@@ -196,7 +196,7 @@ class SeatGroup(object):
         :return: None
         """
         if not (isinstance(name, tuple) or isinstance(name, list)):
-            raise SeatGroupError("Cannot add Seat - invalid name.  Must be iterable, but got: {0}".format(name))
+            raise SeatGroupError("Cannot add_seat Seat - invalid name.  Must be iterable, but got: {0}".format(name))
         else:
             # Seat being added has multi-level name.  Could be len=1 (this level), len>1 (deeper level).
             this_name = str(name[0])
@@ -213,7 +213,7 @@ class SeatGroup(object):
                     if this_name in self.seats:
                         if merge:
                             # print("Adding SeatGroup to name already in use.  Attempting to merge SeatGroups")
-                            # print("New SeatGroup to add:")
+                            # print("New SeatGroup to add_seat:")
                             # seat.display()
                             # print("SeatGroup {0} before merge: ".format(this_name))
                             # self.seats[this_name].display()
@@ -236,10 +236,10 @@ class SeatGroup(object):
                 if not this_name in self.seats:
                     if make_deep_groups:
                         sg = SeatGroup()
-                        self.add(seat=sg, name=(this_name,))
+                        self.add_seat(seat=sg, name=(this_name,))
                     else:
-                        raise SeatGroupError("Cannot add seat '{0}', SeatGroup '{1}' not defined".format(name, name[0]))
-                self.seats[this_name].add(seat, name[1:], make_deep_groups=make_deep_groups)
+                        raise SeatGroupError("Cannot add_seat seat '{0}', SeatGroup '{1}' not defined".format(name, name[0]))
+                self.seats[this_name].add_seat(seat, name[1:], make_deep_groups=make_deep_groups)
                 return
 
     def remove(self, name, remove_deep_seats=True, cleanup_empty_groups=True):
@@ -313,7 +313,7 @@ class SeatGroup(object):
             if seat is None:
                 continue
             else:
-                newsg.add(seat, loc)
+                newsg.add_seat(seat, loc)
         return newsg
 
     def get_seats_as_list(self, seat_locs, fail_if_missing=True, copy_seats=False):
@@ -445,7 +445,7 @@ class SeatGroup(object):
             sg = self.get_seats_as_seatgroup(locs_this)
         merged_seats = zip(locs_other, other.get_seats_as_list(locs_other))
         for loc, seat in merged_seats:
-            sg.add(seat, loc)
+            sg.add_seat(seat, loc)
         if not inplace:
             return sg
 
@@ -491,7 +491,7 @@ class SeatGroup(object):
                     temp = self.seats[oldname]
                     # print("got temp: ", temp)
                     self.remove((oldname,))
-                    self.add(temp, (newname,))
+                    self.add_seat(temp, (newname,))
 
     def difference(self, other_sg):
         """
@@ -528,18 +528,18 @@ class SeatGroup(object):
                 continue
             elif this_seat is None:
                 # Removed seat
-                res['removed'].add(other_seat, loc)
+                res['removed'].add_seat(other_seat, loc)
             elif other_seat is None:
                 # Added seat
-                res['added'].add(this_seat, loc)
+                res['added'].add_seat(this_seat, loc)
             else:
                 # Could be more than one of these at a time
                 if this_seat.price != other_seat.price:
                     # Price change
-                    res['new_price'].add(this_seat, loc)
+                    res['new_price'].add_seat(this_seat, loc)
                 if this_seat.list_id != other_seat.list_id:
                     # Listid change (new listing)
-                    res['new_listid'].add(this_seat, loc)
+                    res['new_listid'].add_seat(this_seat, loc)
 
         return res
 
@@ -623,7 +623,7 @@ class SeatGroup(object):
                     # Some listing files have duplicate listings.  Handle these here and warn the user
                     loc = (section, row, seatNumber)
                     try:
-                        sg.add(seat, loc)
+                        sg.add_seat(seat, loc)
                     except DuplicateSeatError:
                         print("WARNING: Duplicate seat detected at {0}".format(loc))
         return sg
@@ -653,7 +653,7 @@ class SeatGroupChronology(object):
         :return: None
         """
         if timepoint in self.seatgroups:
-            raise SeatGroupError("Cannot add SeatGroup at timepoint {0} - SeatGroup already exists with that timepoint".format(timepoint))
+            raise SeatGroupError("Cannot add_seat SeatGroup at timepoint {0} - SeatGroup already exists with that timepoint".format(timepoint))
         else:
             if isinstance(timepoint, datetime.datetime):
                 self.seatgroups[timepoint] = sg

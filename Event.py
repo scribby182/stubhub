@@ -35,9 +35,9 @@ class Event(object):
         """
         Add a SeatGroup timepoint to the event's chronology from a JSON formatted event file, identified by a timepoint
 
-        Possible improvement: Could update sales/add/... Chronologies for each seatgroup added.
+        Possible improvement: Could update sales/add_seat/... Chronologies for each seatgroup added.
         Could run prev_diff = diff(this_timepoint, prev), next_diff = diff(next_timepoint, this_timepoint), then
-        sales.add(prev_diff, this_timepoint), sales.remove(next_diff), and sales.add(next_diff, next_timepoint).
+        sales.add_seat(prev_diff, this_timepoint), sales.remove(next_diff), and sales.add_seat(next_diff, next_timepoint).
         Probably want this auto_update togglable, and group-adds could disable to avoid remaking sales infor that gets
         rewritten immediately afterwards.
 
@@ -65,7 +65,7 @@ class Event(object):
             timepoint = datetime.datetime.strptime(match.group(2), DATETIME_FORMAT)
             return (eventid, timepoint)
 
-        # Get all filenames in the directory, parse them into (eventid, datetime), then add and that match the requested
+        # Get all filenames in the directory, parse them into (eventid, datetime), then add_seat and that match the requested
         # eventID to the Event
         for fn in os.listdir(directory):
             full_fn = os.path.join(directory, fn)
