@@ -70,7 +70,7 @@ def get_next_event(eventfile=None, update_eventfile=True, remove_next=True, add_
 
     :param eventfile:
     :param remove_next: If True, remove the first event in the list before saving the eventfile
-    :param add_next_to_end: If True, add the first event in the list to the end of the list before saving the eventfile
+    :param add_next_to_end: If True, add_seat the first event in the list to the end of the list before saving the eventfile
     :return: The eventid of the next event in the list
     """
 
