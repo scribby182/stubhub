@@ -93,16 +93,27 @@ class SeatGroup(object):
         # If I get here, we're all the same!
         return True
 
-    # def __add__(self, other):
-    #     """
-    #
-    #     Merge two SeatGroups together using the merge() method, returning a new SeatGroup.
-    #
-    #     :param other: Another SeatGroup
-    #     :return: A new SeatGroup
-    #     """
-    #     return self.merge(other)
-    def math_operation(self, other, operation='add_seat', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
+    def __add__(self, other):
+        """
+        Perform arithmatic addition between self and other, using all elements in self and returning a new SeatGroup
+
+        :param other: Another SeatGroup
+        :return: A new SeatGroup
+        """
+        return self.math_operation(other, operation='add', seat_locs=None)
+
+
+    def __sub__(self, other):
+        """
+        Perform arithmatic addition between self and other, using all elements in self and returning a new SeatGroup
+
+        :param other: Another SeatGroup
+        :return: A new SeatGroup
+        """
+        return self.math_operation(other, operation='sub', seat_locs=None)
+
+
+    def math_operation(self, other, operation='add', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
         """
         Return a new SeatGroup populated by seats priced as the difference (self.seats[some_seat] - other).
 
@@ -147,9 +158,9 @@ class SeatGroup(object):
         seats = newsg.get_seats_as_list(seat_locs)
 
         for i in range(len(seats)):
-            if operation == 'add_seat':
+            if operation == 'add':
                 seats[i].price = seats[i].price + other_seats[i].price
-            elif operation == 'subtract':
+            elif operation == 'sub':
                 seats[i].price = seats[i].price - other_seats[i].price
 
         return newsg
@@ -171,7 +182,7 @@ class SeatGroup(object):
         :param inplace: Does subtraction inplace instead of returning a copy
         :return: A SeatGroup
         """
-        return self.math_operation(other, operation='subtract', seat_locs=seat_locs,
+        return self.math_operation(other, operation='sub', seat_locs=seat_locs,
                                    preserve_unreferenced_seats=preserve_unreferenced_seats, inplace=inplace)
 
 
