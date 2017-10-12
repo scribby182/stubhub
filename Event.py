@@ -1,10 +1,13 @@
 import datetime
 import re
 import os
+import numpy as np
 from pprint import pprint
 import json
-from Seats import DuplicateSeatError, SeatGroupError, SeatGroupChronology, SeatGroup, Seat
+from Seats import DuplicateSeatError, SeatGroupError, SeatGroupChronology, SeatGroup, Seat, SeatGroupFixedPrice
 from stubhub_list_scrape import DATETIME_FORMAT
+from itertools import product
+import matplotlib.pyplot as plt
 
 class Event(object):
     """
@@ -20,6 +23,11 @@ class Event(object):
         self.new_price = None
         self.new_listid = None
         self.namemap = [] # For holding any common seat name remapping.  See subclasses below for example
+        self.ignore = [] # List of location tuples that are to be ignored during any seat import
+        self.include = None # List of locations that will be used (if not None, anything not on this list is removed after loading SGC)
+        self.season_ticket_groups = {}
+        self.season_tickets = SeatGroup()
+
 
     def add_meta(self, json_file):
         """
@@ -48,6 +56,41 @@ class Event(object):
         :return: None
         """
         self.chronology.add_seatgroup_from_event_json(timepoint, json_file, update_names=self.namemap)
+        # Remove any seats on ignore list
+        # Better way to do this?  Feels wasteful.
+        for ig in self.ignore:
+            try:
+                self.chronology.seatgroups[timepoint].remove(ig, remove_deep_seats=True, cleanup_empty_groups=True)
+            except SeatGroupError:
+                pass
+
+
+    def init_season_ticket_groups(self):
+        """
+        Prototype function for initializing season_ticket_groups in subclasses
+        :return: None
+        """
+        raise NotImplementedError()
+
+
+    def init_season_ticket_seatgroup(self, price_override=None):
+        """
+        Initialize a SeatGroup with all season tickets.
+
+        Optionally initialize all seats to a fixed price (for debugging)
+
+        :param price_override: A fixed price for a single game for all seats (useful for debugging).  If None, standard prices are used
+        :return: None
+        """
+        for group in self.season_ticket_groups:
+            sgfp = SeatGroupFixedPrice()
+            if price_override is None:
+                this_price = self.season_ticket_groups[group]['price'] / 8
+            else:
+                this_price = price_override
+            sgfp.add_seat(Seat(this_price, season_ticket_group=group))
+            for s in self.season_ticket_groups[group]['locs']:
+                self.season_tickets.add_seat(sgfp, s)
 
 
     def scrape_timepoints_from_dir(self, eventid, directory, update_names=True):
@@ -84,19 +127,61 @@ class Event(object):
             else:
                 print("DEBUG: {0} is not a file".format(fn))
 
+        # Keep only the locations on the include list
+        if self.include is not None:
+            self.chronology = self.chronology.slice_by_seat(self.include)
+
+
     def infer_chronological_changes(self):
         diff = self.chronology.find_differences()
         self.sales = diff['removed']
         self.added = diff['added']
         self.new_price = diff['new_price']
         self.new_listid = diff['new_listid']
+        self.sales_relative = self.sales - self.season_tickets
     # Properties
     # Add day_of_week property?
     # Add time of event/date of event, which pulls from the self.datetime?
 
+
+    def plot_price_history(self, groups='all', price_type='rel', savefig=True, ymin=-200.0, ymax=500.0, ):
+        """
+        Plot price versus time for the event by season ticket groups, (DISABLED: filtering prices by function f).
+
+        :param price_type: rel for relative prices, abs for absolute
+        :param f: (DISABLED) Same format as f in SGC.get_prices()
+        :return: None
+        """
+        if price_type == 'rel':
+            sgc = self.sales_relative
+        elif price_type == 'abs':
+            sgc = self.sales
+        else:
+            raise ValueError("Invalid price_type '{0}' - must be 'abs' or 'rel'".format(price_type))
+
+        if groups == 'all':
+            groups = sorted(self.season_ticket_groups)
+
+        plt.style.use('ggplot')
+        for i, g in enumerate(groups):
+            # NEED BETTER HANDLING OF GROUPS THAT ARE EMPTY
+            try:
+                fig, ax = plt.subplots()
+                sales_rel = (sgc.slice_by_seat(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices()
+                sales_all_rel = (sgc.slice_by_seat(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices(f=None)
+                line = ax.plot_date(sales_rel['timepoint'], sales_rel['price'], "-", label=g)[0]
+                ax.plot_date(sales_all_rel['timepoint'], sales_all_rel['price'], ".", color=line.get_color())
+                ax.set_ylim((ymin, ymax))
+                fig.autofmt_xdate()
+                plt.legend(loc='upper left', fontsize='x-small')
+                fig.savefig(g + ".png")
+            except Exception as e:
+                print("LIKELY EXCEPTION DUE TO EMPTY GROUPS - NEED TO IMPROVE THIS")
+                print(e)
+
 class Panthers(Event):
     # TODO: This catches most bad names, but a few like "Gridiron" and "side" (from "lower side") still slip through.  Add a "remove seats like this" feature?
-    def __init__(self, *args, **kwargs):
+    def __init__(self, price=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.namemap = [
             (r'(?i)\s*Club\s*', ''),
@@ -109,6 +194,184 @@ class Panthers(Event):
             (r'(?i)\s*premium\s*', ''),
             (r'(?i)\s*sideline\s*', ''),
         ]
+
+        # Custom ignore list (these sections have no associated season ticket price, so no need of them)
+        self.ignore = [(105,), (118,), (125,), (138,), ("Gridiron", )]
+
+        # Build season tickets
+        self.init_season_ticket_groups()
+        self.init_season_ticket_seatgroup(price_override=price)
+
+        # Custom inclusion list (only sections in this list are loaded)
+        self.include = set()
+        for s in self.season_ticket_groups:
+            self.include.update(self.season_ticket_groups[s]['locs'])
+
+    def init_season_ticket_groups(self):
+        """
+        Initializes season ticket groupings for a Panthers event.
+
+        :return: None
+        """
+        # Season Ticket Section Data
+        rows_box = ["WC"] + \
+                   ["1{0}".format(c) for c in "ABCDEFGHIJ"] + \
+                   list(range(1, 17))
+        rows_reserved = list(range(17, 60))
+
+        # Club 1
+        sections = [315, 316, 343, 344]
+        self.season_ticket_groups['Club 1'] = {
+			'locs': list(product(sections)),
+			'price': 4500.0,
+		}
+
+        # Club 2
+        sections = [313, 314, 317, 318, 341, 342, 345, 346]
+        self.season_ticket_groups['Club 2'] = {
+			'locs': list(product(sections)),
+			'price': 3250.0,
+		}
+
+        # Club 3
+        sections = [308, 309, 310, 311, 312, 319, 320, 321, 322, 323, 336, 337, 338, 339, 340, 347, 348, 349, 350]
+        self.season_ticket_groups['Club 3'] = {
+			'locs': list(product(sections)),
+			'price': 2750.0,
+		}
+
+        # A1
+        sections = [111, 112, 131, 132]
+        self.season_ticket_groups['A1'] = {
+			'locs': list(product(sections)),
+			'price': 1950.0,
+		}
+
+        # A2
+        sections = [110, 113, 130, 133]
+        self.season_ticket_groups['A2'] = {
+			'locs': list(product(sections)),
+			'price': 1600.0,
+		}
+
+        # B
+        sections = [106, 107, 108, 109, 114, 115, 116, 117, 126, 127, 128, 129, 134, 135, 136, 137]
+        self.season_ticket_groups['B'] = {
+			'locs': list(product(sections)),
+			'price': 1300.0,
+		}
+
+        # C
+        sections = [101, 102, 103, 104, 119, 120, 121, 122, 123, 124, 139, 140, 201, 202, 203, 204, 205, 206, 224, 225, 226, 227,
+                    228, 229, 230, 231, 232, 233, 234, 252, 253, 254, 255, 256]
+        self.season_ticket_groups['C'] = {
+			'locs': list(product(sections)),
+			'price': 1100.0,
+		}
+
+        # D Box
+        sections = [513, 514, 515, 516, 540, 541, 542, 543]
+        rows = rows_box
+        self.season_ticket_groups['D Box'] = {
+			'locs': list(product(sections, rows)),
+			'price': 840.0,
+		}
+
+        # D Reserved
+        # sections = [513, 514, 515, 516, 540, 541, 542, 543]
+        rows = rows_reserved
+        self.season_ticket_groups['D Reserved'] = {
+			'locs': list(product(sections, rows)),
+			'price': 710.0,
+		}
+
+        # E Box
+        sections = list(range(508, 513)) + list(range(517, 522)) + list(range(535, 540)) + list(range(544, 549))
+        rows = rows_box
+        self.season_ticket_groups['E Box'] = {
+			'locs': list(product(sections, rows)),
+			'price': 740.0,
+		}
+
+        # E Reserved
+        # sections =
+        rows = rows_reserved
+        self.season_ticket_groups['E Reserved'] = {
+			'locs': list(product(sections, rows)),
+			'price': 610.0,
+		}
+
+        # F Box
+        sections = [501, 502, 503] + list(range(526, 531)) + [553, 554]
+        rows = rows_box
+        self.season_ticket_groups['F Box'] = {
+			'locs': list(product(sections, rows)),
+			'price': 680.0,
+		}
+
+        # F Reserved
+        # sections =
+        rows = rows_reserved
+        self.season_ticket_groups['F Reserved'] = {
+			'locs': list(product(sections, rows)),
+			'price': 550.0,
+		}
+
+        # G Box
+        sections = [505, 506, 523, 524, 532, 533, 550, 551]
+        rows = rows_box
+        self.season_ticket_groups['G Box'] = {
+			'locs': list(product(sections, rows)),
+			'price': 610.0,
+		}
+
+        # G Reserved
+        # sections =
+        rows = rows_reserved
+        self.season_ticket_groups['G Reserved'] = {
+			'locs': list(product(sections, rows)),
+			'price': 480.0,
+		}
+
+        # X Box
+        sections = [507, 522, 534, 549]
+        rows = rows_box
+        self.season_ticket_groups['X Box'] = {
+			'locs': list(product(sections, rows)),
+			'price': 740.0,
+		}
+
+        # X Reserved
+        # sections =
+        rows = rows_reserved
+        self.season_ticket_groups['X Reserved'] = {
+			'locs': list(product(sections, rows)),
+			'price': 610.0,
+		}
+
+        # Y Box
+        sections = [504, 525, 531, 552]
+        rows = rows_box
+        self.season_ticket_groups['Y Box'] = {
+			'locs': list(product(sections, rows)),
+			'price': 680.0,
+		}
+
+        # Y Reserved
+        # sections =
+        rows = rows_reserved
+        self.season_ticket_groups['Y Reserved'] = {
+            'locs': list(product(sections, rows)),
+            'price': 550.0,
+        }
+
+        # # Unknown - these are not part of any set section
+        # sections = [105, 118, 125, 138]
+        # self.season_ticket_groups['Unknown'] = {
+        #     'locs': list(product(sections)),
+        #     'price': 5000.0, # Set these to a high ticket price so they never come up as super good deals
+        # }
+
 
 # Exceptions
 class EventError(Exception):

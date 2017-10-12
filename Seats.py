@@ -10,7 +10,7 @@ class Seat(object):
     """
     Object to hold data associated with a single seat
     """
-    def __init__(self, price=None, available=None, facevalue=None, list_id=None):
+    def __init__(self, price=None, available=None, facevalue=None, list_id=None, season_ticket_group=None):
         self._price = None
         self.price = price
         self._facevalue = None
@@ -18,6 +18,7 @@ class Seat(object):
         self.available = available
         self._list_id = None
         self.list_id = list_id
+        self.season_ticket_group = season_ticket_group
         # These are what are used in evaluating equality.  Put them up here so I don't forget to add_seat to the list
         # if we add_seat new attributes
         self._equality_attributes = ['price', 'facevalue', 'available', 'list_id']
@@ -40,7 +41,7 @@ class Seat(object):
         return True
 
     def __repr__(self):
-        return "{0}(price={1}, available={2})".format(type(self).__name__, self.price, self.available)
+        return "{0}(price={1}, group={2})".format(type(self).__name__, self.price, self.season_ticket_group)
 
     @property
     def price(self):
@@ -223,14 +224,7 @@ class SeatGroup(object):
                 elif isinstance(seat, SeatGroup):
                     if this_name in self.seats:
                         if merge:
-                            # print("Adding SeatGroup to name already in use.  Attempting to merge SeatGroups")
-                            # print("New SeatGroup to add_seat:")
-                            # seat.display()
-                            # print("SeatGroup {0} before merge: ".format(this_name))
-                            # self.seats[this_name].display()
                             self.seats[this_name].merge(seat, handle_duplicates=False, inplace=True)
-                            # print("SeatGroup {0} after merge: ", this_name)
-                            # self.seats[this_name].display()
                         else:
                             raise DuplicateSeatError("Seat \"{0}\" already in use".format(this_name))
                     else:
@@ -255,9 +249,9 @@ class SeatGroup(object):
 
     def remove(self, name, remove_deep_seats=True, cleanup_empty_groups=True):
         """
-        Remove a Seat of SeatGroup from the object
+        Remove a Seat or SeatGroup from the object
 
-        :param name: Name of the seat to be removed.  Can be a tuple describing a nested seat of remove_deep_seats
+        :param name: Name of the seat to be removed.  Can be a tuple describing a nested seat if remove_deep_seats
                      is True.
         :param remove_deep_seats: Boolean.  If True, name can be a tuple referring to seats nested in deep SeatGroups
         :param cleanup_empty_groups: Boolean.  If True, any recursive seat removal that leaves an empty SeatGroup will
@@ -648,7 +642,7 @@ class SeatGroupFixedPrice(SeatGroup):
         super().__init__()
         self.master_seat_name = ('*',)
 
-    def add(self, seat, *args, **kwargs):
+    def add_seat(self, seat, *args, **kwargs):
         """
         Add the seat provided to the single named seat "*" using SeatGroup.add()
         :param seat:
@@ -657,7 +651,7 @@ class SeatGroupFixedPrice(SeatGroup):
         :param merge:
         :return:
         """
-        super().add(seat, self.master_seat_name, *args, **kwargs)
+        super().add_seat(seat, self.master_seat_name, *args, **kwargs)
 
     def get_seats_as_list(self, seat_locs, fail_if_missing=True):
         """
@@ -739,11 +733,8 @@ class SeatGroupChronology(object):
         for i in range(1, len(self.sorted_timepoints)):
             this_t = self.sorted_timepoints[i]
             prev_t = self.sorted_timepoints[i-1]
-            print("comparing {0} to {1}".format(this_t, prev_t))
+            # print("comparing {0} to {1}".format(this_t, prev_t))
             diff = self.seatgroups[this_t].difference(self.seatgroups[prev_t])
-            for k in sorted(diff):
-                print('\t', k)
-                diff[k].display()
             added.add_seatgroup(this_t, diff['added'])
             removed.add_seatgroup(this_t, diff['removed'])
             new_price.add_seatgroup(this_t, diff['new_price'])
@@ -791,10 +782,7 @@ class SeatGroupChronology(object):
             data = []
 
             for tp in self.sorted_timepoints:
-                print("Handling timepoint: ", tp)
                 prices = self.seatgroups[tp].get_prices()
-                print("Found prices: ")
-                pprint(prices)
 
                 if f is not None and len(prices) > 0:
                     prices = f(prices)
@@ -814,6 +802,48 @@ class SeatGroupChronology(object):
         else:
             raise ValueError("Invalid return type \"{0}\"".format(return_type))
         return data
+
+
+    def __add__(self, other):
+        """
+        Convenience function to apply the SeatGroup.math_operation('add') to all SeatGroups in the chronology, using other.
+
+        :param other: Another SeatGroup
+        :return: A new SeatGroup
+        """
+        return self.math_operation(other, operation='add', seat_locs=None, inplace=False)
+
+
+    def __sub__(self, other):
+        """
+        Convenience function to apply the SeatGroup.math_operation('sub') to all SeatGroups in the chronology, using other.
+
+        :param other: Another SeatGroup
+        :return: A new SeatGroup
+        """
+        return self.math_operation(other, operation='sub', seat_locs=None, inplace=False)
+
+
+    def math_operation(self, other, operation='add', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
+        """
+        Convenience function to apply the SeatGroup.math_operation to all SeatGroups in the chronology, using other.
+
+        :param other: The other SeatGroup in the operation
+        :param operation:
+        :param seat_locs:
+        :param preserve_unreferenced_seats:
+        :param inplace:
+        :return: None
+        """
+
+        if inplace:
+            new_sgc = self
+        else:
+            new_sgc = copy.deepcopy(self)
+        for tp in new_sgc.sorted_timepoints:
+            new_sgc.seatgroups[tp].math_operation(other, operation=operation, seat_locs=seat_locs,
+                                               preserve_unreferenced_seats=preserve_unreferenced_seats, inplace=inplace)
+        return new_sgc
 
 
     def __getitem__(self, t, single_type='nearest'):
@@ -887,6 +917,8 @@ class SeatGroupChronology(object):
         """
         Return a new SGC that contains only content from the specified locations.
 
+        NOTE: Why is this not .get_seats?  Isn't this like the other .get_seats functions?
+
         :param seat_locs: List of location tuples of the format required by SeatGroup.get_seats_as_seatgroup()
         :return: SeatGroupChronology type object
         """
@@ -895,6 +927,19 @@ class SeatGroupChronology(object):
             sg = self.seatgroups[tp].get_seats_as_seatgroup(seat_locs, fail_if_missing=False)
             sgc.add_seatgroup(tp, sg)
         return sgc
+
+    def get_locs(self, seat_locs=None, depth=None):
+        """
+        Returns a list of tuples identifying all the seats in any SeatGroup within this Chronology.
+
+        :param seat_locs:
+        :param depth:
+        :return:
+        """
+        all_locs = set()
+        for tp in self.sorted_timepoints:
+            all_locs.update(self.seatgroups[tp].get_locs(seat_locs=seat_locs, depth=depth))
+        return list(sorted(all_locs))
 
 # Exceptions
 class SeatGroupError(Exception):
