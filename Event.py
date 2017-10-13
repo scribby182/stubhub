@@ -17,7 +17,7 @@ class Event(object):
         self.chronology = SeatGroupChronology()
         self.datetime = None
         self.location = None
-        self.meta = {} # For things like home/away team, etc.
+        self.meta = None # For things like home/away team, etc.
         self.sales = None
         self.added = None
         self.new_price = None
@@ -39,7 +39,7 @@ class Event(object):
         # formats to a standard dict?
         raise NotImplementedError()
 
-    def add_timepoint(self, timepoint, json_file, update_names=True):
+    def add_timepoint(self, timepoint, json_file, update_names=True, update_meta=True):
         """
         Add a SeatGroup timepoint to the event's chronology from a JSON formatted event file, identified by a timepoint
 
@@ -64,6 +64,11 @@ class Event(object):
             except SeatGroupError:
                 pass
 
+        if update_meta:
+            if self.meta != None and self.meta != self.chronology.seatgroups[timepoint].meta:
+                print("WARNING: New timepoint metadata '{0}' does not match past metadata '{1}' - updating to newest metadata".format(self.chronology.seatgroups[timepoint].meta, self.meta))
+            self.meta = self.chronology.seatgroups[timepoint].meta
+
 
     def init_season_ticket_groups(self):
         """
@@ -85,7 +90,7 @@ class Event(object):
         for group in self.season_ticket_groups:
             sgfp = SeatGroupFixedPrice()
             if price_override is None:
-                this_price = self.season_ticket_groups[group]['price'] / 8
+                this_price = self.season_ticket_groups[group]['price']
             else:
                 this_price = price_override
             sgfp.add_seat(Seat(this_price, season_ticket_group=group))
@@ -144,12 +149,15 @@ class Event(object):
     # Add time of event/date of event, which pulls from the self.datetime?
 
 
-    def plot_price_history(self, groups='all', price_type='rel', savefig=True, ymin=-200.0, ymax=500.0, ):
+    def plot_price_history(self, groups='all', price_type='rel', prefix="", plot_date_relative_to_event=True, ymin=-200.0, ymax=500.0, ):
         """
         Plot price versus time for the event by season ticket groups, (DISABLED: filtering prices by function f).
 
         :param price_type: rel for relative prices, abs for absolute
         :param f: (DISABLED) Same format as f in SGC.get_prices()
+        :param plot_date_relative_to_event: False: Plot dates as stored in SGC
+                                True: Plot dates relative to the event's data in self.meta (eg: Event-1 day, -2 days...)
+                                A timepoint: Plot dates relative to the specified timepoint
         :return: None
         """
         if price_type == 'rel':
@@ -169,15 +177,52 @@ class Event(object):
                 fig, ax = plt.subplots()
                 sales_rel = (sgc.slice_by_seat(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices()
                 sales_all_rel = (sgc.slice_by_seat(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices(f=None)
-                line = ax.plot_date(sales_rel['timepoint'], sales_rel['price'], "-", label=g)[0]
-                ax.plot_date(sales_all_rel['timepoint'], sales_all_rel['price'], ".", color=line.get_color())
+
+                if plot_date_relative_to_event is False:
+                    dates = sales_rel['timepoint']
+                    dates_all = sales_all_rel['timepoint']
+                    line = ax.plot_date(dates, sales_rel['price'], "-", label=g)[0]
+                    ax.plot_date(dates_all, sales_all_rel['price'], ".", color=line.get_color())
+                    fig.autofmt_xdate()
+
+                elif plot_date_relative_to_event:
+                    if plot_date_relative_to_event is True:
+                        plot_date_relative_to_event = self.meta['date']
+                    elif not isinstance(plot_date_relative_to_event, datetime.datetime):
+                        raise ValueError("normalize_dates must be True, False, or a datetime object")
+                    # Is this better served as a SGC property, or at least method?  Will it get used elsewhere?
+                    dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in sales_rel['timepoint']]
+                    dates_all = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in sales_all_rel['timepoint']]
+                    line = ax.plot(dates, sales_rel['price'], "-", label=g)[0]
+                    ax.plot(dates_all, sales_all_rel['price'], ".", color=line.get_color())
+                    fig.autofmt_xdate()
+                    ax.set_xlabel("Days Before Event")
+                    ax.set_xlim((None, 0))
+
                 ax.set_ylim((ymin, ymax))
-                fig.autofmt_xdate()
+                ax.set_ylabel("Sale Price Relative to Season Ticket Price (${0})".format(self.season_ticket_groups[g]['price']))
                 plt.legend(loc='upper left', fontsize='x-small')
-                fig.savefig(g + ".png")
+                fig.savefig(prefix + g + ".png")
             except Exception as e:
                 print("LIKELY EXCEPTION DUE TO EMPTY GROUPS - NEED TO IMPROVE THIS")
                 print(e)
+
+    def normalize_chronology(self, start=None, stop=None, step=None, rename_timepoints=True):
+        """
+        Convert the internal Chronology into one with timepoints ranging from start to stop at step intervals using SGC.arange
+
+        See SGC.arange for more detail on syntax
+        :param start: Default: self.meta['date']
+        :param stop: Default: None (continue stepping until past the first timepoint)
+        :param step: Default: -6 hours
+        :return:
+        """
+        if start is None:
+            start = self.meta['date']
+        if step is None:
+            step = datetime.timedelta(hours=-6)
+        self.chronology = self.chronology.arange(start, stop, step, rename_timepoints=rename_timepoints)
+
 
 class Panthers(Event):
     # TODO: This catches most bad names, but a few like "Gridiron" and "side" (from "lower side") still slip through.  Add a "remove seats like this" feature?
@@ -223,42 +268,42 @@ class Panthers(Event):
         sections = [315, 316, 343, 344]
         self.season_ticket_groups['Club 1'] = {
 			'locs': list(product(sections)),
-			'price': 4500.0,
+			'price': 4500.0 / 8.0,
 		}
 
         # Club 2
         sections = [313, 314, 317, 318, 341, 342, 345, 346]
         self.season_ticket_groups['Club 2'] = {
 			'locs': list(product(sections)),
-			'price': 3250.0,
+			'price': 3250.0 / 8.0,
 		}
 
         # Club 3
         sections = [308, 309, 310, 311, 312, 319, 320, 321, 322, 323, 336, 337, 338, 339, 340, 347, 348, 349, 350]
         self.season_ticket_groups['Club 3'] = {
 			'locs': list(product(sections)),
-			'price': 2750.0,
+			'price': 2750.0 / 8.0,
 		}
 
         # A1
         sections = [111, 112, 131, 132]
         self.season_ticket_groups['A1'] = {
 			'locs': list(product(sections)),
-			'price': 1950.0,
+			'price': 1950.0 / 8.0,
 		}
 
         # A2
         sections = [110, 113, 130, 133]
         self.season_ticket_groups['A2'] = {
 			'locs': list(product(sections)),
-			'price': 1600.0,
+			'price': 1600.0 / 8.0,
 		}
 
         # B
         sections = [106, 107, 108, 109, 114, 115, 116, 117, 126, 127, 128, 129, 134, 135, 136, 137]
         self.season_ticket_groups['B'] = {
 			'locs': list(product(sections)),
-			'price': 1300.0,
+			'price': 1300.0 / 8.0,
 		}
 
         # C
@@ -266,7 +311,7 @@ class Panthers(Event):
                     228, 229, 230, 231, 232, 233, 234, 252, 253, 254, 255, 256]
         self.season_ticket_groups['C'] = {
 			'locs': list(product(sections)),
-			'price': 1100.0,
+			'price': 1100.0 / 8.0,
 		}
 
         # D Box
@@ -274,7 +319,7 @@ class Panthers(Event):
         rows = rows_box
         self.season_ticket_groups['D Box'] = {
 			'locs': list(product(sections, rows)),
-			'price': 840.0,
+			'price': 840.0 / 8.0,
 		}
 
         # D Reserved
@@ -282,7 +327,7 @@ class Panthers(Event):
         rows = rows_reserved
         self.season_ticket_groups['D Reserved'] = {
 			'locs': list(product(sections, rows)),
-			'price': 710.0,
+			'price': 710.0 / 8.0,
 		}
 
         # E Box
@@ -290,7 +335,7 @@ class Panthers(Event):
         rows = rows_box
         self.season_ticket_groups['E Box'] = {
 			'locs': list(product(sections, rows)),
-			'price': 740.0,
+			'price': 740.0 / 8.0,
 		}
 
         # E Reserved
@@ -298,7 +343,7 @@ class Panthers(Event):
         rows = rows_reserved
         self.season_ticket_groups['E Reserved'] = {
 			'locs': list(product(sections, rows)),
-			'price': 610.0,
+			'price': 610.0 / 8.0,
 		}
 
         # F Box
@@ -306,7 +351,7 @@ class Panthers(Event):
         rows = rows_box
         self.season_ticket_groups['F Box'] = {
 			'locs': list(product(sections, rows)),
-			'price': 680.0,
+			'price': 680.0 / 8.0,
 		}
 
         # F Reserved
@@ -314,7 +359,7 @@ class Panthers(Event):
         rows = rows_reserved
         self.season_ticket_groups['F Reserved'] = {
 			'locs': list(product(sections, rows)),
-			'price': 550.0,
+			'price': 550.0 / 8.0,
 		}
 
         # G Box
@@ -322,7 +367,7 @@ class Panthers(Event):
         rows = rows_box
         self.season_ticket_groups['G Box'] = {
 			'locs': list(product(sections, rows)),
-			'price': 610.0,
+			'price': 610.0 / 8.0,
 		}
 
         # G Reserved
@@ -330,7 +375,7 @@ class Panthers(Event):
         rows = rows_reserved
         self.season_ticket_groups['G Reserved'] = {
 			'locs': list(product(sections, rows)),
-			'price': 480.0,
+			'price': 480.0 / 8.0,
 		}
 
         # X Box
@@ -338,7 +383,7 @@ class Panthers(Event):
         rows = rows_box
         self.season_ticket_groups['X Box'] = {
 			'locs': list(product(sections, rows)),
-			'price': 740.0,
+			'price': 740.0 / 8.0,
 		}
 
         # X Reserved
@@ -346,7 +391,7 @@ class Panthers(Event):
         rows = rows_reserved
         self.season_ticket_groups['X Reserved'] = {
 			'locs': list(product(sections, rows)),
-			'price': 610.0,
+			'price': 610.0 / 8.0,
 		}
 
         # Y Box
@@ -354,7 +399,7 @@ class Panthers(Event):
         rows = rows_box
         self.season_ticket_groups['Y Box'] = {
 			'locs': list(product(sections, rows)),
-			'price': 680.0,
+			'price': 680.0 / 8.0,
 		}
 
         # Y Reserved
@@ -362,7 +407,7 @@ class Panthers(Event):
         rows = rows_reserved
         self.season_ticket_groups['Y Reserved'] = {
             'locs': list(product(sections, rows)),
-            'price': 550.0,
+            'price': 550.0 / 8.0,
         }
 
         # # Unknown - these are not part of any set section

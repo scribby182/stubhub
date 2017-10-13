@@ -5,6 +5,7 @@ import bisect
 import json
 import re
 import copy
+from stubhub_list_scrape import DATETIME_FORMAT
 
 class Seat(object):
     """
@@ -61,6 +62,7 @@ class SeatGroup(object):
     def __init__(self):
         self.seats = {}
         self.sorted_names = []
+        self.meta = {}
 
     def __len__(self):
         """
@@ -571,11 +573,12 @@ class SeatGroup(object):
         return price_sum / n
 
     @classmethod
-    def init_from_event_json(cls, json_file):
+    def init_from_event_json(cls, json_file, get_meta=True):
         """
         Populate and return a SeatGroup object fro4m a JSON formatted event file
 
         :param json_file: Filename of a JSON file with event listings data
+        :param get_meta: If True, will attempt to scrape metadata from the JSON (otherwise, data set to None)
         :return: None
         """
         # Load event information to dictionary
@@ -583,6 +586,18 @@ class SeatGroup(object):
             event_dict = json.load(f)
 
         sg = cls()
+        # Try to grab metadata
+        try:
+            sg.meta['opponent'] = event_dict['event_info']['eventMeta']['secondaryAct']
+        except:
+            pass
+        try:
+            date_format = "%Y-%m-%dT%H:%M:%S"
+            temp = re.sub(r'[+\-]\d\d\:\d\d$', '', event_dict['event_info']['eventDateLocal'])
+            sg.meta['date'] = datetime.datetime.strptime(temp, date_format)
+        except:
+            pass
+        # Grab all listing data
         for listing in event_dict['listing']:
             # Unpack and handle possible missing values
             try:
@@ -671,13 +686,14 @@ class SeatGroupChronology(object):
     def __init__(self):
         self.seatgroups = {}
         self.sorted_timepoints = []
+        self.meta = None # For things like home/away team, etc.
 
     def display(self):
         for tp in self.sorted_timepoints:
             print(tp)
             self.seatgroups[tp].display()
 
-    def add_seatgroup(self, timepoint, sg, update_names=None):
+    def add_seatgroup(self, timepoint, sg, update_names=None, update_meta=True):
         """
         Add a SeatGroup to the object, checking if another of the same timepoint already exists.
 
@@ -688,13 +704,18 @@ class SeatGroupChronology(object):
         :return: None
         """
         if timepoint in self.seatgroups:
-            raise SeatGroupError("Cannot add_seat SeatGroup at timepoint {0} - SeatGroup already exists with that timepoint".format(timepoint))
+            raise DuplicateSeatError("Cannot add_seat SeatGroup at timepoint {0} - SeatGroup already exists with that timepoint".format(timepoint))
         else:
             if isinstance(timepoint, datetime.datetime):
                 self.seatgroups[timepoint] = sg
                 if update_names is not None:
                     self.seatgroups[timepoint].update_names(update_names)
                 bisect.insort(self.sorted_timepoints, timepoint)
+                # Check the metadata
+                if update_meta:
+                    if self.meta != None and self.meta != self.seatgroups[timepoint].meta:
+                        print("WARNING: Seatgroup metadata '{0}' does not match past metadata '{1}'.  Metadata updated with most recent data".format(self.seatgroups[timepoint].meta, self.meta))
+                    self.meta = self.seatgroups[timepoint].meta
             else:
                 raise SeatGroupError("Invalid timepoint {0} - must be a datetime object".format(timepoint))
 
@@ -846,6 +867,66 @@ class SeatGroupChronology(object):
         return new_sgc
 
 
+    def arange(self, start=None, stop=None, step=None, rename_timepoints=True, allow_duplicates=False):
+        """
+        Return a new SeatGroupChronology including timepoints between start and stop, each approximately step time apart
+
+        Builds a list of timepoints from start to stop in step increments and returns a SGC that includes only the SGs
+        nearest to those timepoints.  start can be be after stop so long as step is negative (ie, can return timepoints
+        walking backward from a final date)
+
+        Similar in API to np.arange
+        :param start: start of the time range to include in datetime.datetime format
+        :param stop: end of the time range to include in datetime.datetime format
+                     If stop==None, use the last timepoint in the SGC + 1 second
+        :param step: step size between timepoints included in datetime.timedelta format
+        :param rename_timepoints: If True, the timepoints will be entered in the returned SGC under their nominal
+                                  (renamed) times, not the actual time data was collected.  Eg:
+                                  If timepoint=2018-01-01_12:00 and the closest timepoint is self.seatgroups[12:05]
+                                  new SGC will include:
+                                    if rename_timepoints==True:  self.seatgroups[2018-01-01_12:00]
+                                    if rename_timepoints==False: self.seatgroups[2018-01-01_12:05]
+        :param allow_duplicates: (NOT YET IMPLEMENTED) If True, if a SG in the old SGC matched more than one requested timepoint, two copies will be returned (only works if timepoint_rename==True)
+        :return: A new SGC
+        """
+        if stop is None:
+            zero_step = datetime.timedelta()
+            if step > zero_step:
+                stop = self.sorted_timepoints[-1] + datetime.timedelta(seconds=1)
+            if step < zero_step:
+                stop = self.sorted_timepoints[0] - datetime.timedelta(seconds=1)
+
+        # Use a generator, because it is fun
+        def timepoint_arange(start, stop, step):
+            zero_step = datetime.timedelta()
+            if start == stop:
+                raise ValueError("Start and stop cannot be equal")
+            if start < stop and step < zero_step:
+                raise ValueError("step must be positive if start < stop")
+            elif start > stop and step > zero_step:
+                raise ValueError("step must be negative if start > stop")
+            current = start
+            while (current < stop and step > zero_step) or (current > stop and step < zero_step):
+                yield current
+                current += step
+
+        sgc = SeatGroupChronology()
+        timepoints = list(timepoint_arange(start, stop, step))
+        for tp in timepoints:
+            sg = self.__getitem__(tp, single_type='nearest')
+            # Check if duplicate
+            if rename_timepoints:
+                this_tp = tp
+            else:
+                this_tp = self.get_timepoint(tp, single_type='nearest')
+            # this_tp = tp
+            try:
+                sgc.add_seatgroup(this_tp, sg)
+            except DuplicateSeatError:
+                print("WARNING: Ignoring duplicate seatgroup at requested timepoint {0}.  Returned timepoint was {1}".format(tp, this_tp))
+        return sgc
+
+
     def __getitem__(self, t, single_type='nearest'):
         """
         Get one or more elements of the SeatGroupChronology
@@ -856,6 +937,10 @@ class SeatGroupChronology(object):
         Future: Make companion get that returns just the timepoint that meets the single get criteria (that way you can
                 know which SeatGroup you got dring single gets)
         :param t: A single timepoint in datetime format or a slice object between two timepoints (inclusive).
+                  If a slice object:
+                    if slice.step==None, return all timepoints between slice.start and slice.stop.
+                    if slice.step!=None, return some timepoints using self.arange(start, stop, step) (note
+                    default value of rename_timepoint)
         :param single_type: Type of search method for getting a single timepoint:
                                 nearest: (default) return the timepoint nearest to t, with ties always going to the
                                          nearest timepoint to the left (before) t)
@@ -868,50 +953,66 @@ class SeatGroupChronology(object):
         """
         if isinstance(t, slice):
             # Interpret slice
-            start = bisect.bisect_left(self.sorted_timepoints, t.start)
-            stop =  bisect.bisect_right(self.sorted_timepoints, t.stop)
-            data = [(self.sorted_timepoints[i], self.seatgroups[self.sorted_timepoints[i]]) for i in range(start, stop)]
-            sgc_new = SeatGroupChronology()
-            for tp, sg in data:
-                sgc_new.add_seatgroup(tp, sg)
+            # If step is set, use the .arange() function.  Otherwise, handle here
+            if t.step is not None:
+                sgc_new = self.arange(t.start, t.stop, t.step)
+            else:
+                start = bisect.bisect_left(self.sorted_timepoints, t.start)
+                stop =  bisect.bisect_right(self.sorted_timepoints, t.stop)
+
+                data = [(self.sorted_timepoints[i], self.seatgroups[self.sorted_timepoints[i]]) for i in range(start, stop)]
+                sgc_new = SeatGroupChronology()
+                for tp, sg in data:
+                    sgc_new.add_seatgroup(tp, sg)
             return sgc_new
         elif isinstance(t, datetime.datetime):
-            # Interpret single timepoint
-            if single_type == 'exact':
-                t_ret = t
-                # return self.seatgroups[t]
-            elif single_type == 'nearest':
-                # Find where t would insert into self.sorted_timepoints, then compare the deltas
-                i = bisect.bisect_left(self.sorted_timepoints, t)
-                if i == 0:
-                    # Special case at the beginning
-                    t_ret = self.sorted_timepoints[i]
-                elif i == len(self.sorted_timepoints):
-                    # Special case at the end
-                    t_ret = self.sorted_timepoints[-1]
-                else:
-                    # All other cases
-                    d_left = t - self.sorted_timepoints[i-1]
-                    d_right = self.sorted_timepoints[i] - t
-                    if d_left <= d_right:
-                        t_ret = self.sorted_timepoints[i - 1]
-                    else:
-                        t_ret = self.sorted_timepoints[i]
-            elif single_type == 'left':
-                i = bisect.bisect_right(self.sorted_timepoints, t)
-                if i == 0:
-                    # Special case at the beginning
-                    raise KeyError("No timepoint to the left of {0}".format(t))
-                else:
-                    t_ret = self.sorted_timepoints[i - 1]
-            elif single_type == 'right':
-                i = bisect.bisect_left(self.sorted_timepoints, t)
-                if i == len(self.sorted_timepoints):
-                    # Special case at the beginning
-                    raise KeyError("No timepoint to the right of {0}".format(t))
-                else:
-                    t_ret = self.sorted_timepoints[i]
+            t_ret = self.get_timepoint(t, single_type)
             return self.seatgroups[t_ret]
+
+    def get_timepoint(self, t, single_type='nearest'):
+        """
+
+        :param t:
+        :param single_type:
+        :return:
+        """
+
+        # Interpret single timepoint
+        if single_type == 'exact':
+            t_ret = t
+            # return self.seatgroups[t]
+        elif single_type == 'nearest':
+            # Find where t would insert into self.sorted_timepoints, then compare the deltas
+            i = bisect.bisect_left(self.sorted_timepoints, t)
+            if i == 0:
+                # Special case at the beginning
+                t_ret = self.sorted_timepoints[i]
+            elif i == len(self.sorted_timepoints):
+                # Special case at the end
+                t_ret = self.sorted_timepoints[-1]
+            else:
+                # All other cases
+                d_left = t - self.sorted_timepoints[i - 1]
+                d_right = self.sorted_timepoints[i] - t
+                if d_left <= d_right:
+                    t_ret = self.sorted_timepoints[i - 1]
+                else:
+                    t_ret = self.sorted_timepoints[i]
+        elif single_type == 'left':
+            i = bisect.bisect_right(self.sorted_timepoints, t)
+            if i == 0:
+                # Special case at the beginning
+                raise KeyError("No timepoint to the left of {0}".format(t))
+            else:
+                t_ret = self.sorted_timepoints[i - 1]
+        elif single_type == 'right':
+            i = bisect.bisect_left(self.sorted_timepoints, t)
+            if i == len(self.sorted_timepoints):
+                # Special case at the beginning
+                raise KeyError("No timepoint to the right of {0}".format(t))
+            else:
+                t_ret = self.sorted_timepoints[i]
+        return t_ret
 
     def slice_by_seat(self, seat_locs):
         """
