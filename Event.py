@@ -4,7 +4,7 @@ import os
 import numpy as np
 from pprint import pprint
 import json
-from Seats import DuplicateSeatError, SeatGroupError, SeatGroupChronology, SeatGroup, Seat, SeatGroupFixedPrice
+from Seats import DuplicateSeatError, SeatGroupError, SeatGroupChronology, SeatGroup, Seat, SeatGroupFixedPrice, dt_list_arange, dt_list_trim
 from stubhub_list_scrape import DATETIME_FORMAT
 from itertools import product
 import matplotlib.pyplot as plt
@@ -98,12 +98,29 @@ class Event(object):
                 self.season_tickets.add_seat(sgfp, s)
 
 
-    def scrape_timepoints_from_dir(self, eventid, directory, update_names=True):
+    def scrape_timepoints_from_dir(self, eventid, directory, update_names=True, tp_slice=None):
         """
         Scrapes directory for JSON listings files of format "eventid_YYYY-MM-DD_hh-mm-ss.json" and adds them to event.
 
         :param eventid: EventID to look for in directory (only adds events with this ID)
         :param directory: Directory to search for listing files
+        :param tp_slice: Optionally load only some of the data, based on a date slice
+                      If None, all data files associated with event are loaded.
+                      If a slice object, data is loaded from start to end in step intervals:
+                        start: datetime object setting the start of the date interval to load
+                        stop: datetime object setting the end of the date interval to load
+                        step: timedelta object setting the interval of the data to load
+                      At least start and one of stop and step are required:
+                        start + stop: all data from start to stop is loaded
+                        start + step: data is loaded in step increments from start to the end of data
+                        start + stop + step: data is loaded from start to stop in step increments
+                      Notes:
+                        - step can be negative so long as stop==None or stop<start (useful for loading from a set date
+                        backward)
+                        - In practice, step will load data at approximately the interval requested, as data points for
+                        the exact dates requested will not be available.  This can result in some gaps in timelines
+                        because more than one step may be closest to the same data file and that data file will only
+                        be loaded once
         :return: None
         """
 
@@ -113,8 +130,9 @@ class Event(object):
             timepoint = datetime.datetime.strptime(match.group(2), DATETIME_FORMAT)
             return (eventid, timepoint)
 
-        # Get all filenames in the directory, parse them into (eventid, datetime), then add_seat and that match the requested
-        # eventID to the Event
+        # Get all filenames in the directory, parse them into (eventid, datetime), then add those that match the
+        # requested eventID to the Event
+        tp_map = {}
         for fn in os.listdir(directory):
             full_fn = os.path.join(directory, fn)
             if os.path.isfile(full_fn):
@@ -122,19 +140,36 @@ class Event(object):
                     this_id, this_time = parse_listings_fn(fn)
                 except:
                     print(
-                        "DEBUG: WARNING: {0} cannot be parsed into listings filename format - skipping".format(
-                            fn))
+                        "DEBUG: WARNING: {0} cannot be parsed into listings filename format - skipping".format(fn))
                     continue
                 if this_id == eventid:
-                    self.add_timepoint(this_time, full_fn, update_names=update_names)
+                    tp_map[this_time] = full_fn
+                    # self.add_timepoint(this_time, full_fn, update_names=update_names)
                 else:
                     print("DEBUG: {0} is not part of event {1} - skipping".format(fn, eventid))
             else:
                 print("DEBUG: {0} is not a file".format(fn))
 
+        if tp_slice:
+            print("Performing sparse data load")
+            tp_list = sorted(list(tp_map.keys()))
+            if tp_slice.step is None:
+                # Load all data within a range
+                tp_list = dt_list_trim(tp_list, tp_slice)
+            else:
+                # Sparsely load data in a range
+                tp_list = dt_list_arange(tp_list, tp_slice)
+            tp_map = {tp: tp_map[tp] for tp in tp_list}
+            print("Loading only {0} timepoints:".format(len(tp_map)))
+            pprint(sorted(tp_map.keys()))
+
+        # Actually load the data in tp_map
+        for tp, fn in tp_map.items():
+            self.add_timepoint(tp, fn, update_names=update_names)
+
         # Keep only the locations on the include list
         if self.include is not None:
-            self.chronology = self.chronology.slice_by_seat(self.include)
+            self.chronology = self.chronology.get_seats(self.include)
 
 
     def infer_chronological_changes(self):
@@ -175,8 +210,8 @@ class Event(object):
             # NEED BETTER HANDLING OF GROUPS THAT ARE EMPTY
             try:
                 fig, ax = plt.subplots()
-                sales_rel = (sgc.slice_by_seat(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices()
-                sales_all_rel = (sgc.slice_by_seat(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices(f=None)
+                sales_rel = (sgc.get_seats(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices()
+                sales_all_rel = (sgc.get_seats(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices(f=None)
 
                 if plot_date_relative_to_event is False:
                     dates = sales_rel['timepoint']
@@ -207,7 +242,7 @@ class Event(object):
                 print("LIKELY EXCEPTION DUE TO EMPTY GROUPS - NEED TO IMPROVE THIS")
                 print(e)
 
-    def normalize_chronology(self, start=None, stop=None, step=None, rename_timepoints=True):
+    def normalize_chronology(self, dt_slice):
         """
         Convert the internal Chronology into one with timepoints ranging from start to stop at step intervals using SGC.arange
 
@@ -217,12 +252,18 @@ class Event(object):
         :param step: Default: -6 hours
         :return:
         """
-        if start is None:
+        if dt_slice.start is None:
             start = self.meta['date']
-        if step is None:
+        else:
+            start = dt_slice.start
+        if dt_slice.step is None:
             step = datetime.timedelta(hours=-6)
-        self.chronology = self.chronology.arange(start, stop, step, rename_timepoints=rename_timepoints)
-
+        else:
+            step = dt_slice.step
+        # Update thje slice with defaults
+        dt_slice = slice(start, dt_slice.stop, step)
+        # self.chronology = self.chronology.arange(start, stop, step, rename_timepoints=rename_timepoints)
+        self.chronology = self.chronology[dt_slice]
 
 class Panthers(Event):
     # TODO: This catches most bad names, but a few like "Gridiron" and "side" (from "lower side") still slip through.  Add a "remove seats like this" feature?

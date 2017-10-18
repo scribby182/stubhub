@@ -1,11 +1,14 @@
-import numpy as np
-import datetime
-from pprint import pprint
 import bisect
+import copy
+import datetime
 import json
 import re
-import copy
-from stubhub_list_scrape import DATETIME_FORMAT
+from pprint import pprint
+
+import numpy as np
+
+from nearest import nearest_index, nearest_value
+
 
 class Seat(object):
     """
@@ -824,7 +827,6 @@ class SeatGroupChronology(object):
             raise ValueError("Invalid return type \"{0}\"".format(return_type))
         return data
 
-
     def __add__(self, other):
         """
         Convenience function to apply the SeatGroup.math_operation('add') to all SeatGroups in the chronology, using other.
@@ -834,7 +836,6 @@ class SeatGroupChronology(object):
         """
         return self.math_operation(other, operation='add', seat_locs=None, inplace=False)
 
-
     def __sub__(self, other):
         """
         Convenience function to apply the SeatGroup.math_operation('sub') to all SeatGroups in the chronology, using other.
@@ -843,7 +844,6 @@ class SeatGroupChronology(object):
         :return: A new SeatGroup
         """
         return self.math_operation(other, operation='sub', seat_locs=None, inplace=False)
-
 
     def math_operation(self, other, operation='add', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
         """
@@ -865,67 +865,6 @@ class SeatGroupChronology(object):
             new_sgc.seatgroups[tp].math_operation(other, operation=operation, seat_locs=seat_locs,
                                                preserve_unreferenced_seats=preserve_unreferenced_seats, inplace=inplace)
         return new_sgc
-
-
-    def arange(self, start=None, stop=None, step=None, rename_timepoints=True, allow_duplicates=False):
-        """
-        Return a new SeatGroupChronology including timepoints between start and stop, each approximately step time apart
-
-        Builds a list of timepoints from start to stop in step increments and returns a SGC that includes only the SGs
-        nearest to those timepoints.  start can be be after stop so long as step is negative (ie, can return timepoints
-        walking backward from a final date)
-
-        Similar in API to np.arange
-        :param start: start of the time range to include in datetime.datetime format
-        :param stop: end of the time range to include in datetime.datetime format
-                     If stop==None, use the last timepoint in the SGC + 1 second
-        :param step: step size between timepoints included in datetime.timedelta format
-        :param rename_timepoints: If True, the timepoints will be entered in the returned SGC under their nominal
-                                  (renamed) times, not the actual time data was collected.  Eg:
-                                  If timepoint=2018-01-01_12:00 and the closest timepoint is self.seatgroups[12:05]
-                                  new SGC will include:
-                                    if rename_timepoints==True:  self.seatgroups[2018-01-01_12:00]
-                                    if rename_timepoints==False: self.seatgroups[2018-01-01_12:05]
-        :param allow_duplicates: (NOT YET IMPLEMENTED) If True, if a SG in the old SGC matched more than one requested timepoint, two copies will be returned (only works if timepoint_rename==True)
-        :return: A new SGC
-        """
-        if stop is None:
-            zero_step = datetime.timedelta()
-            if step > zero_step:
-                stop = self.sorted_timepoints[-1] + datetime.timedelta(seconds=1)
-            if step < zero_step:
-                stop = self.sorted_timepoints[0] - datetime.timedelta(seconds=1)
-
-        # Use a generator, because it is fun
-        def timepoint_arange(start, stop, step):
-            zero_step = datetime.timedelta()
-            if start == stop:
-                raise ValueError("Start and stop cannot be equal")
-            if start < stop and step < zero_step:
-                raise ValueError("step must be positive if start < stop")
-            elif start > stop and step > zero_step:
-                raise ValueError("step must be negative if start > stop")
-            current = start
-            while (current < stop and step > zero_step) or (current > stop and step < zero_step):
-                yield current
-                current += step
-
-        sgc = SeatGroupChronology()
-        timepoints = list(timepoint_arange(start, stop, step))
-        for tp in timepoints:
-            sg = self.__getitem__(tp, single_type='nearest')
-            # Check if duplicate
-            if rename_timepoints:
-                this_tp = tp
-            else:
-                this_tp = self.get_timepoint(tp, single_type='nearest')
-            # this_tp = tp
-            try:
-                sgc.add_seatgroup(this_tp, sg)
-            except DuplicateSeatError:
-                print("WARNING: Ignoring duplicate seatgroup at requested timepoint {0}.  Returned timepoint was {1}".format(tp, this_tp))
-        return sgc
-
 
     def __getitem__(self, t, single_type='nearest'):
         """
@@ -951,53 +890,39 @@ class SeatGroupChronology(object):
                                        KeyError if there is no timepoint meeting this criteria.
         :return: A SeatGroup (single timepoint) or SeatGroupChronology (multiple timepoints)
         """
-        if isinstance(t, slice):
-            # Interpret slice
-            # If step is set, use the .arange() function.  Otherwise, handle here
-            if t.step is not None:
-                sgc_new = self.arange(t.start, t.stop, t.step)
-            else:
-                start = bisect.bisect_left(self.sorted_timepoints, t.start)
-                stop =  bisect.bisect_right(self.sorted_timepoints, t.stop)
-
-                data = [(self.sorted_timepoints[i], self.seatgroups[self.sorted_timepoints[i]]) for i in range(start, stop)]
-                sgc_new = SeatGroupChronology()
-                for tp, sg in data:
-                    sgc_new.add_seatgroup(tp, sg)
-            return sgc_new
-        elif isinstance(t, datetime.datetime):
-            t_ret = self.get_timepoint(t, single_type)
-            return self.seatgroups[t_ret]
+        if isinstance(t, datetime.datetime):
+            # Single timepoint, return single seatgroup
+            t_nearest = self.get_timepoint(t, single_type=single_type)
+            return copy.deepcopy(self.seatgroups[t_nearest])
+        else:
+            return self.get_timepoints_as_seatgroupchronology(dt_slice=t)
 
     def get_timepoint(self, t, single_type='nearest'):
         """
+        Return a the timepoint datetime object in the SeatGroupChronology nearest to t
 
-        :param t:
-        :param single_type:
-        :return:
+        :param t: A datetime object
+        :param single_type: Mode to assess nearest timepoint:
+                                exact: (Kind of useless... but a binding to check if something is in the SGC) Returns
+                                       a timepoint if the t exactly matches a timepoint in the SGC, otherwise raises a
+                                       SeatGroupError exception
+                                nearest: Returns the timepoint in the SGC nearest to t
+                                left: Returns the timepoint in the SGC nearest and chronologically before t, or raises
+                                a SeatGroupError exception.
+                                right: Returns the timepoint in the SGC nearest and chronologically after t, or raises
+                                a SeatGroupError exception.
+        :return: a single timepoint or a list of timepoints (the datetime objects)
         """
 
-        # Interpret single timepoint
+        # Interpret single timepoint.  Not sure why I'd actually use exact, but still...  Guess it is a sort of
+        # safe and similarly API'd validation method?
         if single_type == 'exact':
-            t_ret = t
-            # return self.seatgroups[t]
-        elif single_type == 'nearest':
-            # Find where t would insert into self.sorted_timepoints, then compare the deltas
-            i = bisect.bisect_left(self.sorted_timepoints, t)
-            if i == 0:
-                # Special case at the beginning
-                t_ret = self.sorted_timepoints[i]
-            elif i == len(self.sorted_timepoints):
-                # Special case at the end
-                t_ret = self.sorted_timepoints[-1]
+            if t in self.sorted_timepoints:
+                t_ret = t
             else:
-                # All other cases
-                d_left = t - self.sorted_timepoints[i - 1]
-                d_right = self.sorted_timepoints[i] - t
-                if d_left <= d_right:
-                    t_ret = self.sorted_timepoints[i - 1]
-                else:
-                    t_ret = self.sorted_timepoints[i]
+                raise SeatGroupError("Timepoint {0} not in SeatGroupChronology".format(t))
+        elif single_type == 'nearest':
+            t_ret = nearest_value(self.sorted_timepoints, t)
         elif single_type == 'left':
             i = bisect.bisect_right(self.sorted_timepoints, t)
             if i == 0:
@@ -1014,9 +939,49 @@ class SeatGroupChronology(object):
                 t_ret = self.sorted_timepoints[i]
         return t_ret
 
-    def slice_by_seat(self, seat_locs):
+    def get_timepoints(self, dt_slice):
         """
-        Return a new SGC that contains only content from the specified locations.
+        Returns a slice of timepoints from the SGC in a sorted list, including all or evenly spaced timepoints in that range.
+
+        :param dt_slice: A slice object with optionally any of start (datetime object), stop (datetime), and step
+                         (timedelta)
+                         start and stop: datetime objects specifying the range of dates to return (only dates between
+                                         these are returned).  If either is None, the range returned will extend to the
+                                         respective end of the original list of timepoints
+                         step: the approximate spacing at which to return a subset of the results (note this is
+                               approximate because it is highly unlikely that the data is perfectly spaced, so the
+                               nearest timepoint between start and stop will be returned for each step.
+                               If None, all data within the range is returned.
+                               NOTE: Step can be negative, so long as start > stop
+        :return: A sorted list of datetime objects
+        """
+        return dt_list_arange(self.sorted_timepoints, dt_slice)
+
+    def get_timepoints_as_seatgroupchronology(self, dt_slice):
+        """
+        Returns a slice of timepoints from the SGC in new SGC, including all or evenly spaced timepoints in that range.
+
+        :param dt_slice: A slice object with optionally any of start (datetime object), stop (datetime), and step
+                         (timedelta)
+                         start and stop: datetime objects specifying the range of dates to return (only dates between
+                                         these are returned).  If either is None, the range returned will extend to the
+                                         respective end of the original list of timepoints
+                         step: the approximate spacing at which to return a subset of the results (note this is
+                               approximate because it is highly unlikely that the data is perfectly spaced, so the
+                               nearest timepoint between start and stop will be returned for each step.
+                               If None, all data within the range is returned.
+                               NOTE: Step can be negative, so long as start > stop
+        :return: A SeatGroupChronology instance
+        """
+        timepoints = self.get_timepoints(dt_slice)
+        sgc_new = SeatGroupChronology()
+        for tp in timepoints:
+            sgc_new.add_seatgroup(tp, copy.deepcopy(self.seatgroups[tp]))
+        return sgc_new
+
+    def get_seats(self, seat_locs):
+        """
+        Return a new SGC that contains data for all timepoints but only at the specified seat locations.
 
         NOTE: Why is this not .get_seats?  Isn't this like the other .get_seats functions?
 
@@ -1055,3 +1020,97 @@ def mygen(start=0, stop=100, inc=1):
     while i < stop:
         yield i
         i += inc
+
+# These datetime list functions could be wrapped into a datetime list object.  Could still be interacted with like a
+# (maybe a subclass of list?) but with these additional features
+def dt_list_trim(dt_list, dt_slice):
+    """
+    Trim a sorted list of datetime instances slice to include only datetimes within a range
+
+    :param dt_slice: A slice object with optionally any of start (datetime object) and stop (datetime):
+                     start and stop: datetime objects specifying the range of dates to return (only dates between
+                                     these are returned).  If either is None, the range returned will extend to the
+                                     respective end of the original list of timepoints
+                     step: Only used to denote the direction or marching between start and stop.  If step > 0, start
+                           must be chronologically before stop.  If step < 0, start can be chronologically after stop
+        :return: A sorted list of datetime objects
+    """
+    # Make start <= stop
+    if dt_slice.step is None or dt_slice.step.total_seconds() >= 0:
+        start = dt_slice.start
+        stop = dt_slice.stop
+    else:
+        start = dt_slice.stop
+        stop = dt_slice.start
+
+    # Get the indices bounding the slice of the timepoint list
+    if start is None:
+        start = 0
+    else:
+        i = bisect.bisect_left(dt_list, start)
+        # Ensure the returned timepoint is inside the range, not just outside
+        if dt_list[i] < start:
+            start = i + 1
+        else:
+            start = i
+    if stop is None:
+        stop = None
+    else:
+        i = bisect.bisect_right(dt_list, stop)
+        # Ensure the returned timepoint is inside the range, not just outside
+        if dt_list[i] > stop:
+            stop = i - 1
+        else:
+            stop = i
+        # stop = bisect.bisect_right(dt_list, stop)
+
+    # deepcopy seems messy here, but I want to make sure I'm not returning a view of anything...
+    if start == stop:
+        new_list = [copy.deepcopy(dt_list[start])]
+    else:
+        new_list = copy.deepcopy(dt_list[start:stop])
+    return new_list
+
+def dt_list_arange(dt_list, dt_slice):
+    """
+    Return a subset of a list of datetime instances.
+
+    The returned list has elements with datetimes in the range from dt_slice.start to dt_slice.stop at approximately
+    dt_slice.step increments.  If start or stop are None, the datetime at the respective end of the lists will be used.
+
+    :param dt_list: A sorted list of datetime object
+    :param dt_slice: A slice object with at least step specified as a timedelta object, and optionally start and/or
+                     stop specified as datetime objects to bound the returned subset.  If start or stop are None, data
+                     will be returned to the respective end of the list.
+                     If step is negative, start represents the last item chronologically and stop the first
+    :return: A sorted list of datetime objects within the range of start and stop spaced approximately step increments
+             apart.
+    """
+    if dt_slice.step is None:
+        raise ValueError ("step must be defined - value is None")
+    # Get only the relevant portion of the dt_list
+    dt_list = dt_list_trim(dt_list, dt_slice)
+
+    # Starting position for the search for either direction(this will always be the first search index)
+    if dt_slice.step.total_seconds() > 0:
+        i = 0
+    else:
+        i = len(dt_list) -1
+    if dt_slice.start is None:
+        dt_target = copy.deepcopy(dt_list[i])
+    else:
+        dt_target = dt_slice.start
+
+    indices = set()
+    indices.add(i)
+
+    while True:
+        dt_target = dt_target + dt_slice.step
+        if dt_target < dt_list[0] or dt_target > dt_list[-1]:
+            break
+        i = nearest_index(dt_list, dt_target)
+        # i = bisect.bisect_left(dt_list, dt_target)
+        indices.add(i)
+
+    dt_list = sorted([copy.deepcopy(dt_list[i]) for i in indices])
+    return dt_list
