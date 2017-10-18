@@ -39,7 +39,7 @@ class Event(object):
         # formats to a standard dict?
         raise NotImplementedError()
 
-    def add_timepoint(self, timepoint, json_file, update_names=True, update_meta=True):
+    def add_timepoint(self, timepoint, json_file, update_names=True, update_meta=False):
         """
         Add a SeatGroup timepoint to the event's chronology from a JSON formatted event file, identified by a timepoint
 

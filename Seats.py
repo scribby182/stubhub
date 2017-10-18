@@ -576,7 +576,7 @@ class SeatGroup(object):
         return price_sum / n
 
     @classmethod
-    def init_from_event_json(cls, json_file, get_meta=True):
+    def init_from_event_json(cls, json_file, get_meta=False):
         """
         Populate and return a SeatGroup object fro4m a JSON formatted event file
 
@@ -696,7 +696,7 @@ class SeatGroupChronology(object):
             print(tp)
             self.seatgroups[tp].display()
 
-    def add_seatgroup(self, timepoint, sg, update_names=None, update_meta=True):
+    def add_seatgroup(self, timepoint, sg, update_names=None, update_meta=False):
         """
         Add a SeatGroup to the object, checking if another of the same timepoint already exists.
 
