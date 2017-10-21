@@ -171,7 +171,6 @@ class SeatGroup(object):
 
         return newsg
 
-
     def subtract(self, other, seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
         """
         Return a new SeatGroup populated by seats priced as the difference (self.seats[some_seat] - other).

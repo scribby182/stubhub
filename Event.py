@@ -170,6 +170,7 @@ class Event(object):
         if tp_slice:
             print("Performing sparse data load")
             tp_list = sorted(list(tp_map.keys()))
+            total_tp = len(tp_list)
             if tp_slice.step is None:
                 # Load all data within a range
                 tp_list = dt_list_trim(tp_list, tp_slice)
@@ -177,8 +178,8 @@ class Event(object):
                 # Sparsely load data in a range
                 tp_list = dt_list_arange(tp_list, tp_slice)
             tp_map = {tp: tp_map[tp] for tp in tp_list}
-            print("Loading only {0} timepoints:".format(len(tp_map)))
-            pprint(sorted(tp_map.keys()))
+            print("Loading only {0} of {1} timepoints:".format(len(tp_map), total_tp))
+            # pprint(sorted(tp_map.keys()))
 
         # Actually load the data in tp_map
         for tp, fn in tp_map.items():
@@ -201,7 +202,7 @@ class Event(object):
     # Add time of event/date of event, which pulls from the self.datetime?
 
 
-    def plot_price_history(self, groups='all', price_type='rel', prefix="", plot_date_relative_to_event=True, ymin=-200.0, ymax=500.0, ):
+    def plot_price_history(self, groups='all', price_type='rel', prefix="", plot_date_relative_to_event=True, ymin=-200.0, ymax=500.0, plot_remaining=True):
         """
         Plot price versus time for the event by season ticket groups, (DISABLED: filtering prices by function f).
 
@@ -210,6 +211,7 @@ class Event(object):
         :param plot_date_relative_to_event: False: Plot dates as stored in SGC
                                 True: Plot dates relative to the event's data in self.meta (eg: Event-1 day, -2 days...)
                                 A timepoint: Plot dates relative to the specified timepoint
+        :param plot_remaining: Add all available tickets at the end of the chronology to the figure
         :return: None
         """
         if price_type == 'rel':
@@ -230,31 +232,50 @@ class Event(object):
                 sales_rel = (sgc.get_seats(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices()
                 sales_all_rel = (sgc.get_seats(self.season_ticket_groups[g]['locs']) - self.season_tickets).get_prices(f=None)
 
+                dates = sales_rel['timepoint']
+                dates_all = sales_all_rel['timepoint']
                 if plot_date_relative_to_event is False:
-                    dates = sales_rel['timepoint']
-                    dates_all = sales_all_rel['timepoint']
                     line = ax.plot_date(dates, sales_rel['price'], "-", label=g)[0]
                     ax.plot_date(dates_all, sales_all_rel['price'], ".", color=line.get_color())
-                    fig.autofmt_xdate()
-
                 elif plot_date_relative_to_event:
                     if plot_date_relative_to_event is True:
                         plot_date_relative_to_event = self.datetime
                     elif not isinstance(plot_date_relative_to_event, datetime.datetime):
                         raise ValueError("normalize_dates must be True, False, or a datetime object")
                     # Is this better served as a SGC property, or at least method?  Will it get used elsewhere?
-                    dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in sales_rel['timepoint']]
-                    dates_all = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in sales_all_rel['timepoint']]
-                    line = ax.plot(dates, sales_rel['price'], "-", label=g)[0]
+                    dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates]
+                    dates_all = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates_all]
+                    line = ax.plot(dates, sales_rel['price'], "-", label=g + "({0})".format(len(sales_all_rel)))[0]
                     ax.plot(dates_all, sales_all_rel['price'], ".", color=line.get_color())
-                    fig.autofmt_xdate()
                     ax.set_xlabel("Days Before Event")
                     ax.set_xlim((None, 1))
                     ax.set_title("vs {1} on {0} (group {2})".format(self.datetime, self.opponent, g))
+                else:
+                    raise ValueError("normalize_dates must be True, False, or a datetime object")
 
+                if plot_remaining:
+                    sg = self.chronology.seatgroups
+                    last_tp = self.chronology.sorted_timepoints[-1]
+                    locs = self.season_ticket_groups[g]['locs']
+                    remaining_rel = (sg[last_tp].get_seats_as_seatgroup(seat_locs=locs, fail_if_missing=False) - self.season_tickets).get_prices()
+                    dates = [last_tp] * len(remaining_rel)
+                    # if plot_date_relative_to_event is False:
+                    #     dates = [last_tp] * len(remaining_rel)
+                    if plot_date_relative_to_event is False:
+                        ax.plot_date(dates, remaining_rel, 'x', label=g + " Unsold", color=line.get_color())
+                    elif plot_date_relative_to_event:
+                        if plot_date_relative_to_event is True:
+                            plot_date_relative_to_event = self.datetime
+                        elif not isinstance(plot_date_relative_to_event, datetime.datetime):
+                            raise ValueError("normalize_dates must be True, False, or a datetime object")
+                        dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates]
+                        ax.plot(dates, remaining_rel, 'x', label=g + " Unsold ({0})".format(len(remaining_rel)), color=line.get_color())
+                    else:
+                        raise ValueError("normalize_dates must be True, False, or a datetime object")
                 ax.set_ylim((ymin, ymax))
                 ax.set_ylabel("Sale Price Relative to Season Ticket Price (${0})".format(self.season_ticket_groups[g]['price']))
                 plt.legend(loc='upper left', fontsize='x-small')
+                fig.autofmt_xdate()
                 fig.savefig(prefix + g + ".png")
             except Exception as e:
                 print("LIKELY EXCEPTION DUE TO EMPTY GROUPS - NEED TO IMPROVE THIS")
