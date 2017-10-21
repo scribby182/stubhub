@@ -15,9 +15,10 @@ class Event(object):
     """
     def __init__(self):
         self.chronology = SeatGroupChronology()
+        self.eventid = None
+        self.event_info_file = None
         self.datetime = None
-        self.location = None
-        self.meta = None # For things like home/away team, etc.
+        self.opponent = None
         self.sales = None
         self.added = None
         self.new_price = None
@@ -29,15 +30,28 @@ class Event(object):
         self.season_tickets = SeatGroup()
 
 
-    def add_meta(self, json_file):
+    def add_meta(self, json_file=None):
         """
-        Add an Event's metadata from a JSON formatted event file.
+        Add an Event's metadata from a JSON formatted event info file, looking it up by eventid.
+
         :param json_file:
-        :return:
+        :return: None
         """
-        # Should there be a non-JSON way to do this too?  Maybe this is dict based and then the JSON one loads and
-        # formats to a standard dict?
-        raise NotImplementedError()
+        if json_file is None:
+            json_file = self.event_info_file
+        with open(json_file, 'r') as f:
+            event_meta = json.load(f)
+        try:
+            event_meta[self.eventid]
+            eid = self.eventid
+        except KeyError:
+            # JSON dump writes keys as strings
+            event_meta[str(self.eventid)]
+            eid = str(self.eventid)
+
+        self.opponent = event_meta[eid]['away']
+        self.datetime = datetime.datetime.strptime(event_meta[eid]['date'], DATETIME_FORMAT)
+
 
     def add_timepoint(self, timepoint, json_file, update_names=True, update_meta=False):
         """
@@ -124,6 +138,9 @@ class Event(object):
         :return: None
         """
 
+        self.eventid = eventid
+        self.add_meta()
+
         def parse_listings_fn(fn):
             match = re.match(r'(\d+)_(.+)\.json', fn)
             eventid = int(match.group(1))
@@ -145,10 +162,10 @@ class Event(object):
                 if this_id == eventid:
                     tp_map[this_time] = full_fn
                     # self.add_timepoint(this_time, full_fn, update_names=update_names)
-                else:
-                    print("DEBUG: {0} is not part of event {1} - skipping".format(fn, eventid))
-            else:
-                print("DEBUG: {0} is not a file".format(fn))
+                # else:
+                #     print("DEBUG: {0} is not part of event {1} - skipping".format(fn, eventid))
+            # else:
+            #     print("DEBUG: {0} is not a file".format(fn))
 
         if tp_slice:
             print("Performing sparse data load")
@@ -222,7 +239,7 @@ class Event(object):
 
                 elif plot_date_relative_to_event:
                     if plot_date_relative_to_event is True:
-                        plot_date_relative_to_event = self.meta['date']
+                        plot_date_relative_to_event = self.datetime
                     elif not isinstance(plot_date_relative_to_event, datetime.datetime):
                         raise ValueError("normalize_dates must be True, False, or a datetime object")
                     # Is this better served as a SGC property, or at least method?  Will it get used elsewhere?
@@ -232,7 +249,8 @@ class Event(object):
                     ax.plot(dates_all, sales_all_rel['price'], ".", color=line.get_color())
                     fig.autofmt_xdate()
                     ax.set_xlabel("Days Before Event")
-                    ax.set_xlim((None, 0))
+                    ax.set_xlim((None, 1))
+                    ax.set_title("vs {1} on {0} (group {2})".format(self.datetime, self.opponent, g))
 
                 ax.set_ylim((ymin, ymax))
                 ax.set_ylabel("Sale Price Relative to Season Ticket Price (${0})".format(self.season_ticket_groups[g]['price']))
@@ -292,6 +310,8 @@ class Panthers(Event):
         self.include = set()
         for s in self.season_ticket_groups:
             self.include.update(self.season_ticket_groups[s]['locs'])
+
+        self.event_info_file = "2017_Panthers_event_data.json"
 
     def init_season_ticket_groups(self):
         """
@@ -458,6 +478,209 @@ class Panthers(Event):
         #     'price': 5000.0, # Set these to a high ticket price so they never come up as super good deals
         # }
 
+class Hornets(Event):
+    # TODO: This catches most bad names, but a few like "Gridiron" and "side" (from "lower side") still slip through.  Add a "remove seats like this" feature?
+    def __init__(self, price=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.namemap = [
+            # (r'(?i)\s*Club\s*', ''),
+            # (r'(?i)\s*I+\s+', ''),
+            # (r'(?i)\s*Terrace\s*', ''),
+            # (r'(?i)\s*lower\s*', ''),
+            # (r'(?i)\s*middle\s*', ''),
+            # (r'(?i)\s*upper\s*', ''),
+            # (r'(?i)\s*end zone\s*', ''),
+            # (r'(?i)\s*premium\s*', ''),
+            # (r'(?i)\s*sideline\s*', ''),
+        ]
+
+        # Custom ignore list (these sections have no associated season ticket price, so no need of them)
+        self.ignore = []
+
+        # Build season tickets
+        self.init_season_ticket_groups()
+        self.init_season_ticket_seatgroup(price_override=price)
+
+        # Custom inclusion list (only sections in this list are loaded)
+        self.include = set()
+        for s in self.season_ticket_groups:
+            self.include.update(self.season_ticket_groups[s]['locs'])
+
+        self.event_info_file = "2017_Hornets_event_data.json"
+
+    def init_season_ticket_groups(self):
+        """
+        Initializes season ticket groupings for a Panthers event.
+
+        :return: None
+        """
+
+        rows_lower_front = ["A1", "A2", "A3"]
+        rows_lower_mid_mid = list("ABCDEFGHIJ")
+        rows_lower_low = list("ABCDEFGH")
+        rows_lower_mid = list("IJKLM")
+        rows_lower_mid_high = list("KLMNOPQ")
+        rows_lower_mid_higher = ["R"]
+        rows_upper_front = list("ABCDEFGHI")
+        rows_upper_mid = list("JKLMNOPQ")
+        rows_upper_up = list("RSTUVWXYZ")
+
+        secs_club_outside = [104, 106, 113, 115]
+        secs_lower_baseline = [101, 102, 103, 107, 109, 110, 112, 116, 117]
+        secs_upper_sideline = [207, 208, 209, 210, 224, 225, 226, 227]
+        secs_upper_curve = [203, 204, 205, 206, 211, 212, 213, 214, 220, 221, 222, 223, 228, 229, 230, 231]
+        secs_upper_baseline = [201, 202, 215, 216, 217, 218, 219]
+
+        sections = [105, 114]
+        rows = rows_lower_front
+        self.season_ticket_groups['ICC Center'] = {
+            'locs': list(product(sections, rows)),
+            'price': 315.0,
+        }
+
+        seats = list(product(secs_club_outside, rows_lower_front)) + list(product([103, 116], ["A1"]))
+        self.season_ticket_groups['ICC Outside'] = {
+            'locs': seats,
+            'price': 285.00,
+        }
+
+        sections = [105, 114]
+        rows = rows_lower_mid_mid
+        self.season_ticket_groups['Low Club Center'] = {
+            'locs': list(product(sections, rows)),
+            'price': 160.0,
+        }
+
+        sections = secs_club_outside
+        rows = rows_lower_low
+        self.season_ticket_groups['Low Club Outside'] = {
+            'locs': list(product(sections, rows)),
+            'price': 140.0,
+        }
+
+        sections = [105, 114]
+        rows = rows_lower_mid_high
+        self.season_ticket_groups['Mid Clubs Center'] = {
+            'locs': list(product(sections, rows)),
+            'price': 134.0,
+        }
+
+        sections = secs_club_outside
+        rows = rows_lower_mid
+        self.season_ticket_groups['Mid Club Outside'] = {
+            'locs': list(product(sections, rows)),
+            'price': 134.0,
+        }
+
+        seats = list(product([105, 114], ["R"])) + list(product(secs_club_outside, [c for c in "NOPQRS"]))
+        self.season_ticket_groups['High Club'] = {
+            'locs': seats,
+            'price': 105.00,
+        }
+
+        seats = list(product([101, 107, 109, 110, 117], ["A1", "A2", "A3"])) + list(product([103, 112, 116], ["A2", "A3"]))
+        self.season_ticket_groups['Baseline Front'] = {
+            'locs': seats,
+            'price': 108.00,
+        }
+
+        seats = list(product([102, 103, 107, 112, 116], rows_lower_mid_mid)) + list(
+            product([101, 109, 110, 117], list("ABCDE")))
+        self.season_ticket_groups['Curve Baseline Low'] = {
+            'locs': seats,
+            'price': 85.00,
+        }
+
+        sections = ["L01", "L02", "L03"]
+        self.season_ticket_groups['Ledge Baseline'] = {
+            'locs': list(product(sections)),
+            'price': 72.0,
+        }
+
+        sections = [102, 103, 107, 112, 116]
+        rows = list("KLMNOPQR")
+        seats = list(product(sections, rows)) + list(product([108, 111]))
+        self.season_ticket_groups['Curve Mid'] = {
+            'locs': seats,
+            'price': 65.0,
+        }
+
+        sections = [101, 109, 110, 117]
+        rows = list("FGHIJKLMNOPQRSTU")
+        self.season_ticket_groups['Baseline Mid'] = {
+            'locs': list(product(sections, rows)),
+            'price': 58.0,
+        }
+
+        sections = [101, 102, 103, 116, 117]
+        rows = list("VWXYZ") + ["AA", "BB", "CC", "DD", "EE"]
+        self.season_ticket_groups['Curve Baseline High'] = {
+            'locs': list(product(sections, rows)),
+            'price': 48.0,
+        }
+
+        sections = secs_upper_sideline
+        rows = list("AB")
+        self.season_ticket_groups['Sideline Front'] = {
+            'locs': list(product(sections, rows)),
+            'price': 42.0,
+        }
+
+        sections = secs_upper_sideline
+        rows = list("CDEFGHI")
+        self.season_ticket_groups['Sideline Low'] = {
+            'locs': list(product(sections, rows)),
+            'price': 29.0,
+        }
+
+        sections = secs_upper_curve
+        rows = rows_upper_front
+        self.season_ticket_groups['Curve Low'] = {
+            'locs': list(product(sections, rows)),
+            'price': 27.0,
+        }
+
+        sections = secs_upper_baseline
+        rows = rows_upper_front
+        self.season_ticket_groups['Baseline Low'] = {
+            'locs': list(product(sections, rows)),
+            'price': 22.0,
+        }
+
+        sections = secs_upper_sideline
+        rows = rows_upper_mid
+        self.season_ticket_groups['Sideline Mid'] = {
+            'locs': list(product(sections, rows)),
+            'price': 18.0,
+        }
+
+        sections = secs_upper_curve
+        rows = rows_upper_mid
+        self.season_ticket_groups['Curve Mid'] = {
+            'locs': list(product(sections, rows)),
+            'price': 13.0,
+        }
+
+        sections = secs_upper_baseline
+        rows = rows_upper_mid
+        self.season_ticket_groups['Baseline High'] = {
+            'locs': list(product(sections, rows)),
+            'price': 13.0,
+        }
+
+        sections = secs_upper_sideline
+        rows = rows_upper_up
+        self.season_ticket_groups['Sideline High'] = {
+            'locs': list(product(sections, rows)),
+            'price': 14.0,
+        }
+
+        sections = secs_upper_curve
+        rows = rows_upper_up
+        self.season_ticket_groups['Curve High'] = {
+            'locs': list(product(sections, rows)),
+            'price': 12.0,
+        }
 
 # Exceptions
 class EventError(Exception):
