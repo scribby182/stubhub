@@ -8,12 +8,14 @@ from pprint import pprint
 import numpy as np
 
 from nearest import nearest_index, nearest_value
+from groupby import groupby
 
 
 class Seat(object):
     """
     Object to hold data associated with a single seat
     """
+
     def __init__(self, price=None, available=None, facevalue=None, list_id=None, season_ticket_group=None):
         self._price = None
         self.price = price
@@ -58,10 +60,12 @@ class Seat(object):
         else:
             self._price = float(price)
 
+
 class SeatGroup(object):
     """
     Object to hold and interact with either a group of Seats or or SeatGroups
     """
+
     def __init__(self):
         self.seats = {}
         self.sorted_names = []
@@ -108,7 +112,6 @@ class SeatGroup(object):
         """
         return self.math_operation(other, operation='add', seat_locs=None)
 
-
     def __sub__(self, other):
         """
         Perform arithmatic addition between self and other, using all elements in self and returning a new SeatGroup
@@ -117,7 +120,6 @@ class SeatGroup(object):
         :return: A new SeatGroup
         """
         return self.math_operation(other, operation='sub', seat_locs=None)
-
 
     def math_operation(self, other, operation='add', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
         """
@@ -144,7 +146,8 @@ class SeatGroup(object):
             all_seat_locs = seat_locs
 
         if inplace:
-            raise NotImplementedError("Need to implement and think about concequences for inplace==True + preserve_unreferenced_seats==False")
+            raise NotImplementedError(
+                "Need to implement and think about concequences for inplace==True + preserve_unreferenced_seats==False")
 
         # If SeatGroup had any other data, this would be better served by a real .copy() method (maybe one that accepts
         # seat_locs to copy subsets).  But this works almost as well
@@ -189,7 +192,6 @@ class SeatGroup(object):
         """
         return self.math_operation(other, operation='sub', seat_locs=seat_locs,
                                    preserve_unreferenced_seats=preserve_unreferenced_seats, inplace=inplace)
-
 
     def add_seat(self, seat, name, make_deep_groups=True, merge=True):
         """
@@ -247,7 +249,8 @@ class SeatGroup(object):
                         sg = SeatGroup()
                         self.add_seat(seat=sg, name=(this_name,))
                     else:
-                        raise SeatGroupError("Cannot add_seat seat '{0}', SeatGroup '{1}' not defined".format(name, name[0]))
+                        raise SeatGroupError(
+                            "Cannot add_seat seat '{0}', SeatGroup '{1}' not defined".format(name, name[0]))
                 self.seats[this_name].add_seat(seat, name[1:], make_deep_groups=make_deep_groups)
                 return
 
@@ -362,7 +365,8 @@ class SeatGroup(object):
                     else:
                         returned[i] = None
                 except AttributeError:
-                    raise SeatGroupError("Seat '{0}' is a Seat but was used as a SeatGroup with location '{1}'".format(loc[0], loc))
+                    raise SeatGroupError(
+                        "Seat '{0}' is a Seat but was used as a SeatGroup with location '{1}'".format(loc[0], loc))
         return returned
 
     def get_locs(self, seat_locs=None, depth=None):
@@ -424,8 +428,7 @@ class SeatGroup(object):
                 prices = np.concatenate((prices, np.array((self.seats[name].price,))))
         return prices
 
-
-    def merge(self, other, inplace=False, handle_duplicates = False):
+    def merge(self, other, inplace=False, handle_duplicates=False):
         """
         Merge two SeatGroups together, including nested Seats and SeatGroups, returning a new SeatGroup.
 
@@ -552,6 +555,22 @@ class SeatGroup(object):
 
         return res
 
+    def describe(self):
+        """
+        Returns a dictionary describing the data in the SeatGroup.
+
+        :return: Dictionary including:
+            count: number of seats
+            mean: mean seat price
+            std: standard deviation of seat price
+            min: minimum seat price
+            25%: 25th percentile seat price
+            50%: 50th percentile seat price
+            75%: 75th percentile seat price
+            max: Maximum seat price
+        """
+        return np_describe(self.get_prices())
+
     @property
     def price(self):
         """
@@ -575,11 +594,15 @@ class SeatGroup(object):
         return price_sum / n
 
     @classmethod
-    def init_from_event_json(cls, json_file, get_meta=False):
+    def init_from_event_json(cls, json_file, price_type='listing_minus_fees', get_meta=False):
         """
         Populate and return a SeatGroup object fro4m a JSON formatted event file
 
         :param json_file: Filename of a JSON file with event listings data
+        :param price_type: Type of price to be loaded from the JSON.  Options are:
+                            current: The "currentPrice" from listing (price to buy including Stubhub buyer fees)
+                            listing: The "listingPrice" from listing (price the seller will get, ignoring Stubhub seller fees)
+                            listing_minus_fees: The "listingPrice" minus a 10% StubHub seller fee
         :param get_meta: If True, will attempt to scrape metadata from the JSON (otherwise, data set to None)
         :return: None
         """
@@ -606,14 +629,19 @@ class SeatGroup(object):
                 facevalue = listing['faceValue']['amount']
             except KeyError:
                 facevalue = None
-            price = listing['currentPrice']['amount']
+            if price_type == 'current':
+                price = listing['currentPrice']['amount']
+            elif price_type == 'listing':
+                price = listing['listingPrice']['amount']
+            elif price_type == 'listing_minus_fees':
+                price = listing['listingPrice']['amount'] * 0.9
             list_id = listing['listingId']
-            section = listing['sellerSectionName']
+            section = listing['sellerSectionName'].upper()
             # Row is occasionally a list of up to 2 rows.  In that case, the seatNumbers will have repeated elements, ie:
             #  quantity=4
             #  rows=[1,2]
             #  seatNumbers=[5,6,5,6]
-            rows = listing['row'].split(',')
+            rows = listing['row'].upper().split(',')
             seatNumbers = listing.get('seatNumbers')
             quantity = listing['quantity']
             # For seatnumbers that are not specified, use list_id plus an index
@@ -622,7 +650,9 @@ class SeatGroup(object):
                 if quantity % 2 == 0:
                     quantity = quantity // 2
                 else:
-                    raise SeatGroupError("Error adding SeatGroup - quantity of a two-row listing not an even number (section: {0}, rows: {1}, quantity: {2}".format(section, rows, quantity))
+                    raise SeatGroupError(
+                        "Error adding SeatGroup - quantity of a two-row listing not an even number (section: {0}, rows: {1}, quantity: {2}".format(
+                            section, rows, quantity))
 
             for row in rows:
                 if seatNumbers == "General Admission":
@@ -633,7 +663,8 @@ class SeatGroup(object):
                     # Seat numbers can be NaN even if they're a comma separated list
                     seat_gen = mygen()
                     # Use only seatNumbers[:quantity] to avoid duplicate seats when we have a two-row case
-                    local_seatNumbers = ["{0}-NaN{1}".format(list_id, next(seat_gen)) if x=="NaN" else x for x in seatNumbers.split(',')[:quantity]]
+                    local_seatNumbers = ["{0}-NaN{1}".format(list_id, next(seat_gen)) if x == "NaN" else x for x in
+                                         seatNumbers.split(',')[:quantity]]
 
                 for seatNumber in local_seatNumbers:
                     # print('DEBUG: Creating seat with Price: {0} (face: {4}), Loc: ({1}, {2}, {3})'.format(price, section, row, seatNumber, facevalue))
@@ -655,6 +686,7 @@ class SeatGroupFixedPrice(SeatGroup):
     """
     SeatGroup-like object that contains only a single seat and returns that seat whenever any seat name is requested.
     """
+
     def __init__(self):
         super().__init__()
         self.master_seat_name = ('*',)
@@ -685,10 +717,16 @@ class SeatGroupChronology(object):
     """
     Object for grouping many SeatGroups chronologically and extracting time-based data
     """
+
     def __init__(self):
         self.seatgroups = {}
         self.sorted_timepoints = []
-        self.meta = None # For things like home/away team, etc.
+        self.meta = None  # For things like home/away team, etc.
+        self.added = None
+        self.removed = None
+        self.new_price = None
+        self.new_listid = None
+        self.sales = None
 
     def display(self):
         for tp in self.sorted_timepoints:
@@ -706,7 +744,9 @@ class SeatGroupChronology(object):
         :return: None
         """
         if timepoint in self.seatgroups:
-            raise DuplicateSeatError("Cannot add_seat SeatGroup at timepoint {0} - SeatGroup already exists with that timepoint".format(timepoint))
+            raise DuplicateSeatError(
+                "Cannot add_seat SeatGroup at timepoint {0} - SeatGroup already exists with that timepoint".format(
+                    timepoint))
         else:
             if isinstance(timepoint, datetime.datetime):
                 self.seatgroups[timepoint] = sg
@@ -716,7 +756,9 @@ class SeatGroupChronology(object):
                 # Check the metadata
                 if update_meta:
                     if self.meta != None and self.meta != self.seatgroups[timepoint].meta:
-                        print("WARNING: Seatgroup metadata '{0}' does not match past metadata '{1}'.  Metadata updated with most recent data".format(self.seatgroups[timepoint].meta, self.meta))
+                        print(
+                            "WARNING: Seatgroup metadata '{0}' does not match past metadata '{1}'.  Metadata updated with most recent data".format(
+                                self.seatgroups[timepoint].meta, self.meta))
                     self.meta = self.seatgroups[timepoint].meta
             else:
                 raise SeatGroupError("Invalid timepoint {0} - must be a datetime object".format(timepoint))
@@ -749,20 +791,125 @@ class SeatGroupChronology(object):
 
         :return: None
         """
-        added = SeatGroupChronology()
-        removed = SeatGroupChronology()
-        new_price = SeatGroupChronology()
-        new_listid = SeatGroupChronology()
+        self.added = SeatGroupChronology()
+        self.removed = SeatGroupChronology()
+        self.new_price = SeatGroupChronology()
+        self.new_listid = SeatGroupChronology()
         for i in range(1, len(self.sorted_timepoints)):
             this_t = self.sorted_timepoints[i]
-            prev_t = self.sorted_timepoints[i-1]
+            prev_t = self.sorted_timepoints[i - 1]
             # print("comparing {0} to {1}".format(this_t, prev_t))
             diff = self.seatgroups[this_t].difference(self.seatgroups[prev_t])
-            added.add_seatgroup(this_t, diff['added'])
-            removed.add_seatgroup(this_t, diff['removed'])
-            new_price.add_seatgroup(this_t, diff['new_price'])
-            new_listid.add_seatgroup(this_t, diff['new_listid'])
-        return {'added': added, 'removed': removed, 'new_price': new_price, 'new_listid': new_listid}
+            self.added.add_seatgroup(this_t, diff['added'])
+            self.removed.add_seatgroup(this_t, diff['removed'])
+            self.new_price.add_seatgroup(this_t, diff['new_price'])
+            self.new_listid.add_seatgroup(this_t, diff['new_listid'])
+
+        # Apply some logic to figure out which removed tickets are sales:
+        #   - For any seat that is removed and then added again, assume the first removal is not a sale
+        print("Number of tickets in removed group: {0}".format(len(self.removed.get_prices(f=None)['price'])))
+        self.sales = copy.deepcopy(self.removed)
+        all_locs = [self.sales.seatgroups[tp].get_locs() for tp in self.sales.sorted_timepoints]
+        for i in range(len(all_locs)):
+            to_remove = []
+            for loc in all_locs[i]:
+                for j in range(i+1, len(all_locs)):
+                    if loc in all_locs[j]:
+                        print("Found {0} from {1} resold in {2}".format(loc, self.sales.sorted_timepoints[i], self.sales.sorted_timepoints[j]))
+                        to_remove.append(loc)
+                        break
+            # Remove repeated seats from the seatgroup
+            for loc in to_remove:
+                print("Removing {0} from {1}".format(loc, self.sales.sorted_timepoints[i]))
+                self.sales.seatgroups[self.sales.sorted_timepoints[i]].remove(loc)
+        print("Number of sold tickets after removing duplicate sales: {0}".format(len(self.sales.get_prices(f=None)['price'])))
+        #   - Filter out "generic" seat numbers?
+
+
+    def calc_average_price_history(self, seat_locs=None, average_type='cumulative', moving_average_timedelta=None,
+                                   price_type='sales', filter_func=None):
+        """
+        Returns a numpy array of the history of average price for the SeatGroupChronology
+
+        :param seat_locs:
+        :param average_type: The type of average to calculate:
+                                moving: a moving average over the last moving_average_timedelta period of time
+                                cumulative: an average over all results up to this timepoint
+        :param moving_average_timedelta: A timedelta object for the range of the moving average (default is 5 days).
+                                         moving_average_timedelta must be positive
+        :param price_type: The type of tickets to include in the average:
+                            sales: average tickets sold
+                            listed: average tickets listed
+                            filtered_sales: average filtered tickets sold
+        :param filter_func: TBD (some way to filter outliers.  Maybe a function that accepts list of prices and returns only
+                            the ones that meet some criteria?)
+        :return:
+        """
+        if moving_average_timedelta is None:
+            moving_average_timedelta = datetime.timedelta(days=5)
+        elif isinstance(moving_average_timedelta, datetime.timedelta):
+            if moving_average_timedelta.total_seconds() < 0:
+                raise ValueError("moving_average_timedelta must be positive (was '{0}')".format(
+                    moving_average_timedelta.total_seconds()))
+        else:
+            raise ValueError("moving_average_timedelta must be a datetime.timedelta object or None")
+
+        # I don't think I do any data manipulation on these, but still using copy_seats here to make sure there's no
+        # side effects I forget...
+        if price_type == 'listed':
+            # data = copy.deepcopy(self)
+            data = self.get_seats(seat_locs, copy_seats=True)
+            # pass
+        elif price_type == 'sales':
+            # data = copy.deepcopy(self.sales)
+            data = self.sales.get_seats(seat_locs, copy_seats=True)
+            # Add a try/catch here?  Make sales a property that initializes itself if needed?
+            # data = data.sales
+        else:
+            raise ValueError("Invalid value for price_type '{0}'".format(price_type))
+
+        # Slice to get only the seats requested, and filter out prices
+        # data = data.get_seats(seat_locs)
+        data = data.get_prices(f=filter_func)
+
+        # if price_type == 'listed':
+        #     data = self.get_prices(f=filter_func)
+        # elif price_type == 'sales':
+        #     data = self.sales.get_prices(f=filter_func)
+
+        # Group all data by timepoint
+        # Use groupby(), which only accepts regular numpy arrays.  Get around this by adding a numeric index instead of
+        # timepoint and grouping by those
+        tps_unique, tps_indices = np.unique(data['timepoint'], return_inverse=True)
+
+        temp = np.stack((tps_indices, data['price'])).T
+        # print("temp (index, price) array")
+        # pprint(temp)
+
+        # Exclude the first column returned by groupby which is just indices referring to timepoints
+        data = groupby(temp, by=0, axis=0)[:, 1:]
+        # print("data after groupby:")
+        # pprint(data)
+
+        if average_type == 'cumulative':
+            data_cumsum = data.cumsum(axis=0)
+            # print('data_cumsum')
+            # pprint(data_cumsum)
+            avg = data_cumsum[:, 0] / data_cumsum[:, 1]
+            # print('avg (shape = {0}):'.format(avg.shape))
+            # pprint(avg)
+        elif average_type == 'moving':
+            # This could be faster by doing a single filter first, I think
+            avg = []
+            for i in range(len(tps_unique)):
+                data_subset = data[
+                    (tps_unique >= tps_unique[i] - moving_average_timedelta) & (tps_unique <= tps_unique[i])]
+                data_subset_sum = data_subset.sum(axis=0)
+                avg.append(data_subset_sum[0] / data_subset_sum[1])
+
+        avg = np.rec.array([tps_unique, avg],
+                           dtype=[('timepoint', 'O'), ('price', 'float')])
+        return avg
 
     def get_lens(self):
         """
@@ -778,15 +925,15 @@ class SeatGroupChronology(object):
             lens[i] = (t, len(self.seatgroups[t]))
         return np.array(lens)
 
-    def get_prices(self, f=np.min, return_type='numpy'):
+    def get_prices(self, f = None, return_type='numpy'):
         """
 
         Future: Merge all price_type scalar options into the same returned numpy record array?  Would save computation,
                 but mess with the sgc return type option (multiple entries with min, max, avg in a SGC would be
                 impossible to use).
 
-        :param f:   Function to be applied to the prices returned for each timepoint's SeatGroup.  Default is np.min to
-                    return minimum seat price in the SG, but could be np.max, np.average, or None (to return all prices)
+        :param f:   Function to be applied to the prices returned for each timepoint's SeatGroup.  Default is None,
+                    which returns all prices.  Other options could be np.min (min price in each SG), np.max, np.average.
                     Note: This function is only appled if len(prices) returned from the SG is greater than zero.
         :param return_type: Type of data to be returned:
                                 numpy: a numpy record array with columns of timepoint and price (note that if
@@ -795,8 +942,12 @@ class SeatGroupChronology(object):
                                         return = [[timepoint1, price1a], [timepoint1, price1b]]
                                 (not implemented) sgc: a SGC that includes dummy seats with the requested price_type (redundant if
                                      price_type=='all')
-        :return:
+                            Note: Raises an EmptySeatGroupError if SeatGroup is empty
+        :return: See return_type
         """
+        if len(self) == 0:
+            raise EmptySeatGroupError("Seatgroup has no seats.")
+
         if return_type == 'sgc':
             raise NotImplementedError("...")
         elif return_type == 'numpy':
@@ -815,7 +966,7 @@ class SeatGroupChronology(object):
             # I think this way dynamically allocates the array during flattening, but couldn't think of how to do it easily
             # without dynamic allocation
             data = [(label, el) for label, sublst in data
-                                  for el in (sublst if hasattr(sublst, "__iter__") else [sublst])]
+                    for el in (sublst if hasattr(sublst, "__iter__") else [sublst])]
 
             # Convert to np record array
             # Used general object here instead of datetime64 because matplotlib recognizes datetime but not datetime64
@@ -844,6 +995,20 @@ class SeatGroupChronology(object):
         """
         return self.math_operation(other, operation='sub', seat_locs=None, inplace=False)
 
+    def __len__(self):
+        """
+        Return the sum of the number of seats in all SeatGroups in the SeatGroupChronology.
+
+        This number is not the number of unique seats - if the same seat location is included in two SeatGroups it is
+        counted twice.
+        """
+        lens = self.get_lens()
+        if len(lens) > 0:
+            length = lens[:,1].sum()
+        else:
+            length = 0
+        return length
+
     def math_operation(self, other, operation='add', seat_locs=None, preserve_unreferenced_seats=False, inplace=False):
         """
         Convenience function to apply the SeatGroup.math_operation to all SeatGroups in the chronology, using other.
@@ -862,7 +1027,8 @@ class SeatGroupChronology(object):
             new_sgc = copy.deepcopy(self)
         for tp in new_sgc.sorted_timepoints:
             new_sgc.seatgroups[tp].math_operation(other, operation=operation, seat_locs=seat_locs,
-                                               preserve_unreferenced_seats=preserve_unreferenced_seats, inplace=inplace)
+                                                  preserve_unreferenced_seats=preserve_unreferenced_seats,
+                                                  inplace=inplace)
         return new_sgc
 
     def __getitem__(self, t, single_type='nearest'):
@@ -978,18 +1144,16 @@ class SeatGroupChronology(object):
             sgc_new.add_seatgroup(tp, copy.deepcopy(self.seatgroups[tp]))
         return sgc_new
 
-    def get_seats(self, seat_locs):
+    def get_seats(self, seat_locs, copy_seats=False):
         """
         Return a new SGC that contains data for all timepoints but only at the specified seat locations.
-
-        NOTE: Why is this not .get_seats?  Isn't this like the other .get_seats functions?
 
         :param seat_locs: List of location tuples of the format required by SeatGroup.get_seats_as_seatgroup()
         :return: SeatGroupChronology type object
         """
         sgc = SeatGroupChronology()
         for tp in self.sorted_timepoints:
-            sg = self.seatgroups[tp].get_seats_as_seatgroup(seat_locs, fail_if_missing=False)
+            sg = self.seatgroups[tp].get_seats_as_seatgroup(seat_locs, fail_if_missing=False, copy_seats=copy_seats)
             sgc.add_seatgroup(tp, sg)
         return sgc
 
@@ -1006,11 +1170,38 @@ class SeatGroupChronology(object):
             all_locs.update(self.seatgroups[tp].get_locs(seat_locs=seat_locs, depth=depth))
         return list(sorted(all_locs))
 
+    def describe(self):
+        """
+        Returns a dictionary describing the data in the SeatGroupChronology.
+
+        :return: Dictionary including:
+            count: number of seats (including duplicate locations)
+            mean: mean seat price
+            std: standard deviation of seat price
+            min: minimum seat price
+            25%: 25th percentile seat price
+            50%: 50th percentile seat price
+            75%: 75th percentile seat price
+            max: Maximum seat price
+        """
+        try:
+            prices = self.get_prices()['price']
+        except EmptySeatGroupError:
+            # Caught empty SGC.
+            prices = np.array([])
+        return np_describe(prices)
+
+
 # Exceptions
 class SeatGroupError(Exception):
     pass
+
+class EmptySeatGroupError(Exception):
+    pass
+
 class DuplicateSeatError(Exception):
     pass
+
 
 # Helpers
 def mygen(start=0, stop=100, inc=1):
@@ -1019,6 +1210,7 @@ def mygen(start=0, stop=100, inc=1):
     while i < stop:
         yield i
         i += inc
+
 
 # These datetime list functions could be wrapped into a datetime list object.  Could still be interacted with like a
 # (maybe a subclass of list?) but with these additional features
@@ -1061,7 +1253,7 @@ def dt_list_trim(dt_list, dt_slice):
             stop = i - 1
         else:
             stop = i
-        # stop = bisect.bisect_right(dt_list, stop)
+            # stop = bisect.bisect_right(dt_list, stop)
 
     # deepcopy seems messy here, but I want to make sure I'm not returning a view of anything...
     if start == stop:
@@ -1069,6 +1261,7 @@ def dt_list_trim(dt_list, dt_slice):
     else:
         new_list = copy.deepcopy(dt_list[start:stop])
     return new_list
+
 
 def dt_list_arange(dt_list, dt_slice):
     """
@@ -1086,7 +1279,7 @@ def dt_list_arange(dt_list, dt_slice):
              apart.
     """
     if dt_slice.step is None:
-        raise ValueError ("step must be defined - value is None")
+        raise ValueError("step must be defined - value is None")
     # Get only the relevant portion of the dt_list
     dt_list = dt_list_trim(dt_list, dt_slice)
 
@@ -1094,7 +1287,7 @@ def dt_list_arange(dt_list, dt_slice):
     if dt_slice.step.total_seconds() > 0:
         i = 0
     else:
-        i = len(dt_list) -1
+        i = len(dt_list) - 1
     if dt_slice.start is None:
         dt_target = copy.deepcopy(dt_list[i])
     else:
@@ -1113,3 +1306,29 @@ def dt_list_arange(dt_list, dt_slice):
 
     dt_list = sorted([copy.deepcopy(dt_list[i]) for i in indices])
     return dt_list
+
+def np_describe(a):
+    if len(a) == 0:
+        data = {
+            'count': 0,
+            'mean': None,
+            'std': None,
+            'min': None,
+            '25%': None,
+            '50%': None,
+            '75%': None,
+            'max': None,
+        }
+    else:
+        per = np.percentile(a, [25, 50, 75])
+        data = {
+            'count': len(a),
+            'mean': a.mean(),
+            'std': a.std(),
+            'min': a.min(),
+            '25%': per[0],
+            '50%': per[1],
+            '75%': per[2],
+            'max': a.max(),
+        }
+    return data
