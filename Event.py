@@ -5,7 +5,9 @@ import numpy as np
 from pprint import pprint
 import json
 import copy
-from Seats import DuplicateSeatError, SeatGroupError, SeatGroupChronology, SeatGroup, Seat, SeatGroupFixedPrice, dt_list_arange, dt_list_trim
+from Seats import SeatGroupChronology, SeatGroup, Seat, SeatGroupFixedPrice, dt_list_arange, dt_list_trim
+from Seats import DuplicateSeatError, SeatGroupError, EmptySeatGroupError
+from Seats import np_describe
 from stubhub_list_scrape import DATETIME_FORMAT
 from itertools import product
 import matplotlib.pyplot as plt
@@ -29,6 +31,23 @@ class Event(object):
         self.include = None # List of locations that will be used (if not None, anything not on this list is removed after loading SGC)
         self.season_ticket_groups = {}
         self.season_tickets = SeatGroup()
+
+        # Set default averages that will be calculated when specific averages are not specified
+        self.default_averages_to_calculate = [
+                              ## 'sales_min_average',
+                              ## 'listed_min_average',
+                              ## 'sales_filtered_average',
+                              ## 'listed_filtered_average',
+                              ## 'sales_average',
+                              ## 'listed_average',
+                              # 'sales_min_moving_average',
+                              ## 'listed_min_moving_average',
+                              'sales_filtered_moving_average',
+                              ## 'listed_filtered_moving_average',
+                              # 'sales_moving_average',
+                              ## 'listed_moving_average',
+                              'sales_filtered_min_moving_average',
+                              ]
 
         self.sales_min_average = None
         self.listed_min_average = None
@@ -274,104 +293,116 @@ class Event(object):
         self.sales_filtered = sales_filt
 
         # Calculate sales prices relative to season ticket costs
-        self.sales_relative = self.sales - self.season_tickets
-        self.sales_filtered_relative = self.sales_filtered - self.season_tickets
+        self.sales_rel = self.sales - self.season_tickets
+        self.sales_filtered_rel = self.sales_filtered - self.season_tickets
 
     # Properties
     # Add day_of_week property?
     # Add time of event/date of event, which pulls from the self.datetime?
 
-    def calc_all_average_price_history(self):
+    def calc_all_average_price_history(self, averages_to_calculate = None):
         """
         Calculate and store standard average price history data.
 
         :return: None
         """
-        # def filter_for_averaging(a):
-        #     return np.min(a)
 
-        # Initialize storage
-        self.sales_min_average              = {}
-        self.listed_min_average             = {}
-        self.sales_filtered_average         = {}
-        self.listed_filtered_average        = {}
-        self.sales_average                  = {}
-        self.listed_average                 = {}
-        self.sales_min_moving_average       = {}
-        self.listed_min_moving_average      = {}
-        self.sales_filtered_moving_average  = {}
-        self.listed_filtered_moving_average = {}
-        self.sales_moving_average           = {}
-        self.listed_moving_average          = {}
-        self.sales_filtered_min_moving_average = {}
-
-        self.sales_min_average_rel = {}
-        self.listed_min_average_rel = {}
-        self.sales_filtered_average_rel = {}
-        self.listed_filtered_average_rel = {}
-        self.sales_average_rel = {}
-        self.listed_average_rel = {}
-        self.sales_min_moving_average_rel = {}
-        self.listed_min_moving_average_rel = {}
-        self.sales_filtered_moving_average_rel = {}
-        self.listed_filtered_moving_average_rel = {}
-        self.sales_moving_average_rel = {}
-        self.listed_moving_average_rel = {}
-        self.sales_filtered_min_moving_average_rel = {}
+        if averages_to_calculate is None:
+            averages_to_calculate = self.default_averages_to_calculate
 
         moving_average_timedelta = datetime.timedelta(days=5)
 
+        # Settings for different types of averages
+        settings = {
+            'sales_min_average': {
+                                  'average_type': 'cumulative',
+                                  'price_type': 'sales',
+                                  'filter_func': np.min,
+                                  'moving_average_timedelta': moving_average_timedelta,
+                                  },
+            'listed_min_average': {
+                                   'average_type': 'cumulative',
+                                   'price_type': 'listed',
+                                   'filter_func': np.min,
+                                   'moving_average_timedelta': moving_average_timedelta,
+                                   },
+            'sales_filtered_average': {
+                                       'average_type': 'cumulative',
+                                       'price_type': 'sales_filtered',
+                                       'filter_func': None,
+                                       'moving_average_timedelta': moving_average_timedelta,
+                                       },
+            'sales_average': {
+                              'average_type': 'cumulative',
+                              'price_type': 'sales',
+                              'filter_func': None,
+                              'moving_average_timedelta': moving_average_timedelta,
+                              },
+            'listed_average': {
+                               'average_type': 'cumulative',
+                               'price_type': 'listed',
+                               'filter_func': None,
+                               'moving_average_timedelta': moving_average_timedelta,
+                               },
+            'sales_min_moving_average': {
+                                         'average_type': 'moving',
+                                         'price_type': 'sales',
+                                         'filter_func': np.min,
+                                         'moving_average_timedelta': moving_average_timedelta,
+                                         },
+            'listed_min_moving_average': {
+                                          'average_type': 'moving',
+                                          'price_type': 'listed',
+                                          'filter_func': np.min,
+                                          'moving_average_timedelta': moving_average_timedelta,
+                                          },
+            'sales_filtered_moving_average': {
+                                              'average_type': 'moving',
+                                              'price_type': 'sales_filtered',
+                                              'filter_func': None,
+                                              'moving_average_timedelta': moving_average_timedelta,
+                                              },
+            'sales_moving_average': {
+                                     'average_type': 'moving',
+                                     'price_type': 'sales',
+                                     'filter_func': None,
+                                     'moving_average_timedelta': moving_average_timedelta,
+                                     },
+            'listed_moving_average': {
+                                      'average_type': 'moving',
+                                      'price_type': 'listed',
+                                      'filter_func': None,
+                                      'moving_average_timedelta': moving_average_timedelta,
+                                      },
+            'sales_filtered_min_moving_average': {
+                                                  'average_type': 'moving',
+                                                  'price_type': 'sales_filtered',
+                                                  'filter_func': np.min,
+                                                  'moving_average_timedelta': moving_average_timedelta,
+                                                  },
+        }
+
+        # Initialize the attributes we need
+        for p in averages_to_calculate:
+            setattr(self, p, {})
+            setattr(self, p + "_rel", {})
+
+        caph = self.average_price_history
+        # Calculate the requested averages
         for i, g in enumerate(sorted(self.season_ticket_groups)):
             print("calculating averages for season ticket group {0}".format(g))
             locs = self.season_ticket_groups[g]['locs']
-            caph = self.average_price_history
-
-            # Calculate various averages and relative average prices
-            # Could refactor this with getter and dict, but...
-            # self.sales_min_average[g]     = caph(seat_locs = locs, average_type = 'cumulative', price_type = 'sales'   , filter_func = np.min)
-            # self.sales_min_average_rel[g] = copy.deepcopy(self.sales_min_average[g])
-            # self.sales_min_average_rel[g]['price'] = self.sales_min_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-            #
-            # self.listed_min_average[g]     = caph(seat_locs = locs, average_type = 'cumulative', price_type = 'listed', filter_func = np.min)
-            # self.listed_min_average_rel[g] = copy.deepcopy(self.listed_min_average[g])
-            # self.listed_min_average_rel[g]['price'] = self.listed_min_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-            #
-            # self.sales_filtered_average[g]     = caph(seat_locs = locs, average_type = 'cumulative', price_type = 'filtered'   , filter_func = None)
-            # self.sales_filtered_average_rel[g] = copy.deepcopy(self.sales_filtered_average[g])
-            # self.sales_filtered_average_rel[g]['price'] = self.sales_filtered_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-            #
-            # self.sales_average[g]     = caph(seat_locs = locs, average_type = 'cumulative', price_type = 'sales'   , filter_func = None)
-            # self.sales_average_rel[g] = copy.deepcopy(self.sales_average[g])
-            # self.sales_average_rel[g]['price'] = self.sales_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-            #
-            # self.listed_average[g]     = caph(seat_locs = locs, average_type = 'cumulative', price_type = 'listed', filter_func = None)
-            # self.listed_average_rel[g] = copy.deepcopy(self.listed_average[g])
-            # self.listed_average_rel[g]['price'] = self.listed_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-
-            self.sales_min_moving_average[g]     = caph(seat_locs = locs, average_type = 'moving',     price_type = 'sales'   , filter_func = np.min, moving_average_timedelta=moving_average_timedelta)
-            self.sales_min_moving_average_rel[g] = copy.deepcopy(self.sales_min_moving_average[g])
-            self.sales_min_moving_average_rel[g]['price'] = self.sales_min_moving_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-
-            # self.listed_min_moving_average[g]     = caph(seat_locs = locs, average_type = 'moving',     price_type = 'listed', filter_func = np.min, moving_average_timedelta=moving_average_timedelta)
-            # self.listed_min_moving_average_rel[g] = copy.deepcopy(self.listed_min_moving_average[g])
-            # self.listed_min_moving_average_rel[g]['price'] = self.listed_min_moving_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-
-            self.sales_filtered_moving_average[g]     = caph(seat_locs = locs, average_type = 'moving',     price_type = 'sales_filtered'   , filter_func = None, moving_average_timedelta=moving_average_timedelta)
-            self.sales_filtered_moving_average_rel[g] = copy.deepcopy(self.sales_filtered_moving_average[g])
-            self.sales_filtered_moving_average_rel[g]['price'] = self.sales_filtered_moving_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-
-            self.sales_moving_average[g]     = caph(seat_locs = locs, average_type = 'moving',     price_type = 'sales'   , filter_func = None, moving_average_timedelta=moving_average_timedelta)
-            self.sales_moving_average_rel[g] = copy.deepcopy(self.sales_moving_average[g])
-            self.sales_moving_average_rel[g]['price'] = self.sales_moving_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-
-            # self.listed_moving_average[g]     = caph(seat_locs = locs, average_type = 'moving',     price_type = 'listed', filter_func = None, moving_average_timedelta=moving_average_timedelta)
-            # self.listed_moving_average_rel[g] = copy.deepcopy(self.listed_moving_average[g])
-            # self.listed_moving_average_rel[g]['price'] = self.listed_moving_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-
-            self.sales_filtered_min_moving_average[g]     = caph(seat_locs = locs, average_type = 'moving',     price_type = 'sales_filtered'   , filter_func = np.min, moving_average_timedelta=moving_average_timedelta)
-            self.sales_filtered_min_moving_average_rel[g] = copy.deepcopy(self.sales_filtered_min_moving_average[g])
-            self.sales_filtered_min_moving_average_rel[g]['price'] = self.sales_filtered_min_moving_average_rel[g]['price'] - self.season_ticket_groups[g]['price']
-
+            for p in averages_to_calculate:
+                print("Running averaging with settings:")
+                pprint(settings[p])
+                try:
+                    getattr(self, p)[g] = caph(seat_locs = locs, **settings[p])
+                    getattr(self, p + "_rel")[g] = copy.deepcopy(getattr(self, p)[g])
+                    getattr(self, p + "_rel")[g]['price'] = getattr(self, p + "_rel")[g]['price'] - self.season_ticket_groups[g]['price']
+                except EmptySeatGroupError:
+                    print("Caught EmptySeatGroupError for group {0}, average {1}- setting to None".format(g, settings[p]))
+                    getattr(self, p)[g] = None
+                    getattr(self, p + "_rel")[g] = None
 
     def average_price_history(self, price_type = 'sales', **kwargs):
         """
@@ -398,9 +429,6 @@ class Event(object):
         else:
             raise SeatGroupError("Unknown price_type '{0}'".format(price_type))
         return sgc.calc_average_price_history(price_type = 'listed', **kwargs)
-        #
-        #
-        # return self.chronology.calc_average_price_history(*args, **kwargs)
 
     def plot_price_history(self, groups='all', price_type='rel', prefix="",
                            plot_date_relative_to_event=True, xlim=None, ylim=None,
@@ -426,7 +454,7 @@ class Event(object):
         # if ylim is None:
         #     ylim = (-200, 200)
         if price_type == 'rel':
-            sgc = self.sales_filtered_relative
+            sgc = self.sales_filtered_rel
         elif price_type == 'abs':
             sgc = self.sales_filtered
         else:
@@ -457,21 +485,7 @@ class Event(object):
             if len(unknown_variables) > 0:
                 raise ValueError("Unknown plot variables: {0}".format(unknown_variables))
         elif included_plot_variables is None:
-            included_plot_variables = [
-                              ## 'sales_min_average',
-                              ## 'listed_min_average',
-                              ## 'sales_filtered_average',
-                              ## 'listed_filtered_average',
-                              ## 'sales_average',
-                              ## 'listed_average',
-                              # 'sales_min_moving_average',
-                              ## 'listed_min_moving_average',
-                              'sales_filtered_moving_average',
-                              ## 'listed_filtered_moving_average',
-                              # 'sales_moving_average',
-                              ## 'listed_moving_average',
-                              'sales_filtered_min_moving_average',
-                              ]
+            included_plot_variables = self.default_averages_to_calculate
         else:
             included_plot_variables = []
         # if price_type == 'rel':
@@ -501,6 +515,7 @@ class Event(object):
         plt.style.use('ggplot')
         for i, g in enumerate(groups):
             # NEED BETTER HANDLING OF GROUPS THAT ARE EMPTY
+            print("Plotting group {0}".format(g))
             try:
                 fig, ax = plt.subplots()
                 # Move these down to where data actually gets plotted?  Dont think they're needed up here
@@ -551,7 +566,7 @@ class Event(object):
                 # Plot unfiltered sales first, if requested (so they sit behind the filtered sales)
                 if plot_filtered_out_sales:
                     if price_type == 'rel':
-                        sgc_uf = self.sales_relative
+                        sgc_uf = self.sales_rel
                     elif price_type == 'abs':
                         sgc_uf = self.sales
 
@@ -603,8 +618,10 @@ class Event(object):
                 plt.legend(loc='upper left', fontsize='x-small')
                 fig.autofmt_xdate()
                 fig.savefig(prefix + g + ".png")
+                plt.close(fig)
             except Exception as e:
                 print("LIKELY EXCEPTION DUE TO EMPTY GROUPS - NEED TO IMPROVE THIS")
+                plt.close(fig)
                 print(e)
 
     def normalize_chronology(self, dt_slice):
@@ -652,8 +669,47 @@ class Event(object):
                         season_ticket_group_2: { }
                         ...
                       }
+            (NOT YET IMPLEMENTED) by_timepoint: {
+                                                    nested by group?  overall?
+                        }
         """
-        raise NotImplementedError("...")
+
+        # Build name of property to use here (is this a good way of doing this?  Makes the code
+        # a bit more straight forward, but feels funny...
+        print("Summarizing with price_type={0}, ticket_type={1}".format(price_type, ticket_type))
+        if ticket_type not in ['sales', 'sales_filtered', 'listed']:
+            raise ValueError("Invalid ticket_type '{0}'".format(ticket_type))
+        name = ticket_type
+        if price_type == 'rel':
+            name = ticket_type + "_" + price_type
+        elif price_type == 'abs':
+            pass
+        else:
+            raise ValueError("Invalid price_type '{0}'".format(price_type))
+        sgc = getattr(self, name)
+
+        print("All sales:")
+        pprint(sgc.get_prices())
+
+        ret = sgc.describe()
+
+        print("describe for overall seats")
+        pprint(ret)
+
+        # Embed settings
+        ret['price_type'] = price_type
+        ret['ticket_type'] = ticket_type
+
+        ret['by_group'] = {}
+
+        for g in self.season_ticket_groups:
+            locs = self.season_ticket_groups[g]['locs']
+            group_sgc = sgc.get_seats(seat_locs = locs)
+            ret['by_group'][g] = group_sgc.describe()
+            print("Describe for group {0}:".format(g))
+            pprint(ret['by_group'][g])
+
+        return ret
 
 class Panthers(Event):
     def __init__(self, price_override=None, **kwargs):

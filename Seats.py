@@ -10,7 +10,6 @@ import numpy as np
 from nearest import nearest_index, nearest_value
 from groupby import groupby
 
-
 class Seat(object):
     """
     Object to hold data associated with a single seat
@@ -230,7 +229,7 @@ class SeatGroup(object):
                 elif isinstance(seat, SeatGroup):
                     if this_name in self.seats:
                         if merge:
-                            self.seats[this_name].merge(seat, handle_duplicates=False, inplace=True)
+                            self.seats[this_name].merge(seat, handle_duplicates='cheapest', inplace=True)
                         else:
                             raise DuplicateSeatError("Seat \"{0}\" already in use".format(this_name))
                     else:
@@ -439,17 +438,18 @@ class SeatGroup(object):
         :param handle_duplicates: If False, raises exception when duplicates detected.
                                   If self, always uses the seat from this SeatGroup when duplicates are found
                                   If other, always uses the seat from the other SeatGroup when duplicates are found
+                                  If cheapest, always keep the cheapest seat when duplicates are found
         :return: A new SeatGroup if inplace=False, else None
         """
-        if handle_duplicates:
-            raise NotImplementedError()
+        if handle_duplicates not in ['cheapest']:
+            raise NotImplementedError("handle_duplicates mode '{0}' not yet supported".format(handle_duplicates))
         else:
             # First check for duplicates
             locs_this = self.get_locs()
             locs_other = other.get_locs()
 
             locs_both = [loc for loc in locs_this if loc in locs_other]
-            if len(locs_both) > 0:
+            if len(locs_both) > 0 and handle_duplicates is False:
                 raise DuplicateSeatError("Found duplicate seats when merging: {0}".format(locs_both))
         if inplace:
             sg = self
@@ -457,6 +457,16 @@ class SeatGroup(object):
             sg = self.get_seats_as_seatgroup(locs_this)
         merged_seats = zip(locs_other, other.get_seats_as_list(locs_other))
         for loc, seat in merged_seats:
+            # If this is a duplicate, handle it
+            if loc in locs_both:
+                if handle_duplicates == 'cheapest':
+                    # Use the cheaper ticket (if sg.price > other.price, sg already has the cheapest
+                    print("Handling duplicate seat {0} when merging - keeping cheapest seat".format(loc))
+                    if sg.get_seats_as_list([loc])[0].price > seat.price:
+                        sg.remove(loc)
+                    else:
+                        # Keep the seat we already have
+                        continue
             sg.add_seat(seat, loc)
         if not inplace:
             return sg
@@ -829,7 +839,7 @@ class SeatGroupChronology(object):
     def calc_average_price_history(self, seat_locs=None, average_type='cumulative', moving_average_timedelta=None,
                                    price_type='sales', filter_func=None):
         """
-        Returns a numpy array of the history of average price for the SeatGroupChronology
+        Returns a numpy record array of the history of average price for the SeatGroupChronology
 
         :param seat_locs:
         :param average_type: The type of average to calculate:
@@ -843,7 +853,7 @@ class SeatGroupChronology(object):
                             filtered_sales: average filtered tickets sold
         :param filter_func: TBD (some way to filter outliers.  Maybe a function that accepts list of prices and returns only
                             the ones that meet some criteria?)
-        :return:
+        :return: Numpy record array of timepoint and price.
         """
         if moving_average_timedelta is None:
             moving_average_timedelta = datetime.timedelta(days=5)
