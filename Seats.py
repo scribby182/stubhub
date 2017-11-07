@@ -461,7 +461,6 @@ class SeatGroup(object):
             if loc in locs_both:
                 if handle_duplicates == 'cheapest':
                     # Use the cheaper ticket (if sg.price > other.price, sg already has the cheapest
-                    print("Handling duplicate seat {0} when merging - keeping cheapest seat".format(loc))
                     if sg.get_seats_as_list([loc])[0].price > seat.price:
                         sg.remove(loc)
                     else:
@@ -604,7 +603,7 @@ class SeatGroup(object):
         return price_sum / n
 
     @classmethod
-    def init_from_event_json(cls, json_file, price_type='listing_minus_fees', get_meta=False):
+    def init_from_event_json(cls, json_file, price_type='listing_minus_fees', get_meta=False, warn_on_duplicate=False):
         """
         Populate and return a SeatGroup object fro4m a JSON formatted event file
 
@@ -688,7 +687,8 @@ class SeatGroup(object):
                     try:
                         sg.add_seat(seat, loc)
                     except DuplicateSeatError:
-                        print("WARNING: Duplicate seat detected at {0}".format(loc))
+                        if warn_on_duplicate:
+                            print("WARNING: Duplicate seat detected at {0}".format(loc))
         return sg
 
 
@@ -784,7 +784,7 @@ class SeatGroupChronology(object):
         for timepoint, json_file in zip(timepoints, json_files):
             self.add_seatgroup_from_event_json(timepoint, json_file, update_names=update_names)
 
-    def add_seatgroup_from_event_json(self, timepoint, json_file, update_names=None):
+    def add_seatgroup_from_event_json(self, timepoint, json_file, update_names=None, verbose=False):
         """
         Add a SeatGroup from a JSON formatted event file, identified by a timepoint key.
 
@@ -792,7 +792,8 @@ class SeatGroupChronology(object):
         :param json_file: Filename of a JSON file with event listings data
         :return: None
         """
-        print("DEBUG: Adding timepoint {0} from file {1}".format(timepoint, json_file))
+        if verbose:
+            print("DEBUG: Adding timepoint {0} from file {1}".format(timepoint, json_file))
         self.add_seatgroup(timepoint, SeatGroup.init_from_event_json(json_file), update_names=update_names)
 
     def find_differences(self):
@@ -817,7 +818,6 @@ class SeatGroupChronology(object):
 
         # Apply some logic to figure out which removed tickets are sales:
         #   - For any seat that is removed and then added again, assume the first removal is not a sale
-        print("Number of tickets in removed group: {0}".format(len(self.removed.get_prices(f=None)['price'])))
         self.sales = copy.deepcopy(self.removed)
         all_locs = [self.sales.seatgroups[tp].get_locs() for tp in self.sales.sorted_timepoints]
         for i in range(len(all_locs)):
@@ -825,16 +825,12 @@ class SeatGroupChronology(object):
             for loc in all_locs[i]:
                 for j in range(i+1, len(all_locs)):
                     if loc in all_locs[j]:
-                        print("Found {0} from {1} resold in {2}".format(loc, self.sales.sorted_timepoints[i], self.sales.sorted_timepoints[j]))
                         to_remove.append(loc)
                         break
             # Remove repeated seats from the seatgroup
             for loc in to_remove:
-                print("Removing {0} from {1}".format(loc, self.sales.sorted_timepoints[i]))
                 self.sales.seatgroups[self.sales.sorted_timepoints[i]].remove(loc)
-        print("Number of sold tickets after removing duplicate sales: {0}".format(len(self.sales.get_prices(f=None)['price'])))
         #   - Filter out "generic" seat numbers?
-
 
     def calc_average_price_history(self, seat_locs=None, average_type='cumulative', moving_average_timedelta=None,
                                    price_type='sales', filter_func=None):
@@ -1321,13 +1317,13 @@ def np_describe(a):
     if len(a) == 0:
         data = {
             'count': 0,
-            'mean': None,
-            'std': None,
-            'min': None,
-            '25%': None,
-            '50%': None,
-            '75%': None,
-            'max': None,
+            'mean': np.nan,
+            'std': np.nan,
+            'min': np.nan,
+            '25%': np.nan,
+            '50%': np.nan,
+            '75%': np.nan,
+            'max': np.nan,
         }
     else:
         per = np.percentile(a, [25, 50, 75])

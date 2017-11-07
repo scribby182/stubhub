@@ -11,6 +11,8 @@ from Seats import np_describe
 from stubhub_list_scrape import DATETIME_FORMAT
 from itertools import product
 import matplotlib.pyplot as plt
+import pandas as pd
+
 
 class Event(object):
     """
@@ -31,6 +33,15 @@ class Event(object):
         self.include = None # List of locations that will be used (if not None, anything not on this list is removed after loading SGC)
         self.season_ticket_groups = {}
         self.season_tickets = SeatGroup()
+
+        self.sales_filter_settings = {
+            'avail_tick_thresh_max_ratio': 1.5,  # Maximum ratio someone will pay above the cheapest available ticket
+            'avail_tick_thresh_min_abs': 30, # max_ratio above avail not applied if the absolute delta is less than this
+            'avail_tick_rule_min_seats': 5, # max_ratio above available not applied if available seats < this
+            'st_max_ratio': 5, # Maximum sales price to season ticket ratio
+            'st_max_abs': 750, # Maximum sales price to season ticket delta
+
+        }
 
         # Set default averages that will be calculated when specific averages are not specified
         self.default_averages_to_calculate = [
@@ -161,7 +172,7 @@ class Event(object):
                 self.season_tickets.add_seat(sgfp, s)
 
 
-    def scrape_timepoints_from_dir(self, directory="./", update_names=True, tp_slice=None):
+    def scrape_timepoints_from_dir(self, directory="./", update_names=True, tp_slice=None, tp_map=None):
         """
         Scrapes directory for JSON listings files of format "eventid_YYYY-MM-DD_hh-mm-ss.json" and adds them to event.
 
@@ -184,34 +195,15 @@ class Event(object):
                         the exact dates requested will not be available.  This can result in some gaps in timelines
                         because more than one step may be closest to the same data file and that data file will only
                         be loaded once
+        :param tp_map: a dictionary of timepoints and their corresponding files.  If specified, directory is not
+                       searched and instead only these files are investigated.  Note that tp_slice can still reduce this
+                       set of files based on slicing rules
         :return: None
         """
-
-        def parse_listings_fn(fn):
-            match = re.match(r'(\d+)_(.+)\.json', fn)
-            eventid = int(match.group(1))
-            timepoint = datetime.datetime.strptime(match.group(2), DATETIME_FORMAT)
-            return (eventid, timepoint)
-
         # Get all filenames in the directory, parse them into (eventid, datetime), then add those that match the
         # requested eventID to the Event
-        tp_map = {}
-        for fn in os.listdir(directory):
-            full_fn = os.path.join(directory, fn)
-            if os.path.isfile(full_fn):
-                try:
-                    this_id, this_time = parse_listings_fn(fn)
-                except:
-                    print(
-                        "DEBUG: WARNING: {0} cannot be parsed into listings filename format - skipping".format(fn))
-                    continue
-                if this_id == self.eventid:
-                    tp_map[this_time] = full_fn
-                    # self.add_timepoint(this_time, full_fn, update_names=update_names)
-                # else:
-                #     print("DEBUG: {0} is not part of event {1} - skipping".format(fn, eventid))
-            # else:
-            #     print("DEBUG: {0} is not a file".format(fn))
+        if tp_map is None:
+            tp_map = find_listings_files(directory)[self.eventid]
 
         if tp_slice:
             print("Performing sparse data load")
@@ -247,49 +239,70 @@ class Event(object):
         self.new_price = self.chronology.new_price
         self.new_listid = self.chronology.new_listid
 
-        # Modifications within the Event context
-        # Assume people won't pay more than threshold*minimum price of any ticket available at the same time in the same
-        # season ticket region, unless the difference is less than threshold_abs_min (to avoid filtering really cheap
-        # tickets)
-        threshold_ratio = 1.5
-        threshold_min_abs = 30
-        min_available_seats = 5
-        print("Filtering sales to remove anything greater than 2x the median price of that group")
+        # Filter "sales" to remove any abnormal data:
+        #   (Settings pulled from self.sales_filter_settings)
+        #   1)  Assume nobody will ever pay more than st_max_ratio * Season Ticket Price
+        #   2)  Assume nobody will ever pay more than st_max_abs above Season Ticket Price
+        #   3)  Assume nobody will pay more than avail_tick_thresh_ratio * min(all available tickets in season ticket group)
+        #       Ignore this rule if (Sale price - Season Ticket Price < avail_tick_thresh_min_abs)
+        #       Ignore this rule if minimum available tickets in group < avail_tick_min
+        avail_tick_thresh_max_ratio = self.sales_filter_settings['avail_tick_thresh_max_ratio']
+        avail_tick_thresh_min_abs = self.sales_filter_settings['avail_tick_thresh_min_abs']
+        avail_tick_rule_min_seats = self.sales_filter_settings['avail_tick_rule_min_seats']
+        st_max_ratio = self.sales_filter_settings['st_max_ratio']
+        st_max_abs = self.sales_filter_settings['st_max_abs']
+
+        # Apply filters
         sales_filt = copy.deepcopy(self.sales) # faster way?  Make a real copy routine?
-        print("Number of seats in sales before filter: {0}".format(len(sales_filt)))
+        # print("Number of seats in sales before filter: {0}".format(len(sales_filt)))
         for g in sorted(self.season_ticket_groups): # Sorting not necessary, but easier for debugging
-            print("Filtering group {0}".format(g))
+            st_price = self.season_ticket_groups[g]['price']
             locs = self.season_ticket_groups[g]['locs']
-            group_sales = self.sales.get_seats(seat_locs=locs)
-            # local_sales_price = group_sales.get_prices(f = None)
-            # tp_avail =
-            for i_tp in range(len(group_sales.sorted_timepoints)):
-                tp = group_sales.sorted_timepoints[i_tp]
-                print("Inspecting timepoint {0}".format(tp))
-                tp_sales = group_sales.seatgroups[tp]
+            group_sales_sgc = self.sales.get_seats(seat_locs=locs)
+            for i_tp in range(len(group_sales_sgc.sorted_timepoints)):
+                tp = group_sales_sgc.sorted_timepoints[i_tp]
+                tp_sales_sg = group_sales_sgc.seatgroups[tp]
                 # Check if there's anything to filter
-                if len(tp_sales) == 0:
-                    print("No sales in this group at this timepoint - moving to next timepoint")
+                if len(tp_sales_sg) == 0:
+                    # print("No sales in this group at this timepoint - moving to next timepoint")
                     continue
+
+                # Collect the data
                 tp_avail = self.chronology.seatgroups[tp].get_seats_as_seatgroup(seat_locs=locs, fail_if_missing=False)
-                if len(tp_avail) < min_available_seats:
-                    print("Very few available seats in section {0} at timepoint {1} - skip filter".format(g, tp))
-                    continue
-                tp_avail_min = tp_avail.get_prices().min()
-                tp_prices = tp_sales.get_prices()
-                tp_prices_mask = (tp_prices > threshold_ratio * tp_avail_min) & (tp_prices - tp_avail_min > threshold_min_abs)
-                if any(tp_prices_mask):
-                    to_filter = [loc for i, loc in enumerate(tp_sales.get_locs()) if tp_prices_mask[i]]
-                    # to_filter = np.array(tp_sales.get_locs())[tp_prices_mask]
-                    to_filter_sg = tp_sales.get_seats_as_seatgroup(seat_locs = to_filter) # DEBUG
-                    print("Found seats that are more than {0}x Min available ticket price {1}, with delta greater than {2}:".format(threshold_ratio, tp_avail_min, threshold_min_abs)) # DEBUG
-                    to_filter_sg.display()
-                    for seat in to_filter:
-                        print("Removing seat {0} from timepoint {1}".format(seat, tp))
-                        sales_filt.seatgroups[tp].remove(seat)
-                    print("Number of seats in sales after this filter: {0}".format(len(sales_filt)))
-                else:
-                    print("Did not find any seats to filter")
+                tp_prices = tp_sales_sg.get_prices()
+                tp_prices_masks = []
+                # Make the filters (True means a row will be removed)
+                # Filter 1) st_max_ratio
+                tp_prices_masks.append(tp_prices > st_max_ratio * st_price)
+
+                # Filter 2) st_max_abs
+                tp_prices_masks.append(tp_prices - st_price > st_max_abs)
+
+                # Filter 3) Ratio to min avail ticket
+                if len(tp_avail) >= avail_tick_rule_min_seats:
+                    tp_avail_min = tp_avail.get_prices().min()
+                    tp_prices_masks.append((tp_prices > avail_tick_thresh_max_ratio * tp_avail_min) & (tp_prices - tp_avail_min > avail_tick_thresh_min_abs))
+
+                # Combine filters (if any available)
+                if len(tp_prices_masks) > 0:
+                    tp_prices_mask = np.any(tp_prices_masks, axis=0)
+
+                    # print("Mask summary (last column is combination):")
+                    # pprint(np.stack([*tp_prices_masks, tp_prices_mask], axis=1))
+
+                    if any(tp_prices_mask):
+                        to_filter = [loc for i, loc in enumerate(tp_sales_sg.get_locs()) if tp_prices_mask[i]] # probably a better way avail...
+                        # to_filter = np.array(tp_sales_sg.get_locs())[tp_prices_mask]
+                        # print("SG of to_filter (just for debugging)")
+                        # to_filter_sg = tp_sales_sg.get_seats_as_seatgroup(seat_locs = to_filter) # DEBUG
+                        # to_filter_sg.display() # DEBUG
+                        for seat in to_filter:
+                            sales_filt.seatgroups[tp].remove(seat)
+                # print("Number of seats in sales after partial filter: {0}".format(len(sales_filt)))
+                # else:
+                #     print("Did not find any seats to filter")
+        # print("Number of seats in sales after filter: {0}".format(len(sales_filt)))
+
         self.sales_filtered = sales_filt
 
         # Calculate sales prices relative to season ticket costs
@@ -390,19 +403,16 @@ class Event(object):
         caph = self.average_price_history
         # Calculate the requested averages
         for i, g in enumerate(sorted(self.season_ticket_groups)):
-            print("calculating averages for season ticket group {0}".format(g))
             locs = self.season_ticket_groups[g]['locs']
             for p in averages_to_calculate:
-                print("Running averaging with settings:")
-                pprint(settings[p])
                 try:
                     getattr(self, p)[g] = caph(seat_locs = locs, **settings[p])
                     getattr(self, p + "_rel")[g] = copy.deepcopy(getattr(self, p)[g])
                     getattr(self, p + "_rel")[g]['price'] = getattr(self, p + "_rel")[g]['price'] - self.season_ticket_groups[g]['price']
                 except EmptySeatGroupError:
-                    print("Caught EmptySeatGroupError for group {0}, average {1}- setting to None".format(g, settings[p]))
-                    getattr(self, p)[g] = None
-                    getattr(self, p + "_rel")[g] = None
+                    # print("Caught EmptySeatGroupError for group {0}, average {1}- setting to NaN".format(g, settings[p]))
+                    getattr(self, p)[g] = np.nan
+                    getattr(self, p + "_rel")[g] = np.nan
 
     def average_price_history(self, price_type = 'sales', **kwargs):
         """
@@ -518,31 +528,32 @@ class Event(object):
             print("Plotting group {0}".format(g))
             try:
                 fig, ax = plt.subplots()
-                # Move these down to where data actually gets plotted?  Dont think they're needed up here
-                sales = sgc.get_seats(self.season_ticket_groups[g]['locs']).get_prices(f = np.min)
-                sales_all = sgc.get_seats(self.season_ticket_groups[g]['locs']).get_prices(f = None)
 
                 # Plot all listed tickets
                 if plot_listed:
                     locs = self.season_ticket_groups[g]['locs']
                     listed = self.chronology.get_seats(seat_locs = locs).get_prices(f = None)
-                    if price_type == 'rel':
-                        listed['price'] = listed['price'] - self.season_ticket_groups[g]['price']
-                    dates = listed['timepoint']
-                    #
-                    # remaining_rel = (sg[last_tp].get_seats_as_seatgroup(seat_locs=locs, fail_if_missing=False) - self.season_tickets).get_prices()
-                    # dates = [last_tp] * len(remaining_rel)
-                    # if plot_date_relative_to_event is False:
-                    #     dates = [last_tp] * len(remaining_rel)
-                    if plot_date_relative_to_event is False:
-                        # ax.plot_date(dates, remaining_rel, 'x', label=g + " Unsold", color=main_color)
-                        ax.plot_date(dates, listed['price'], 'x', color='grey')
-                    elif plot_date_relative_to_event:
-                        dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates]
-                        # ax.plot(dates, remaining_rel, 'x', label=g + " Unsold ({0})".format(len(remaining_rel)), color=main_color)
-                        ax.plot(dates, listed['price'], 'x', color='grey')
+                    if len(listed) > 0:
+                        print("Found tickets listed - plotting")
+                        if price_type == 'rel':
+                            listed['price'] = listed['price'] - self.season_ticket_groups[g]['price']
+                        dates = listed['timepoint']
+                        #
+                        # remaining_rel = (sg[last_tp].get_seats_as_seatgroup(seat_locs=locs, fail_if_missing=False) - self.season_tickets).get_prices()
+                        # dates = [last_tp] * len(remaining_rel)
+                        # if plot_date_relative_to_event is False:
+                        #     dates = [last_tp] * len(remaining_rel)
+                        if plot_date_relative_to_event is False:
+                            # ax.plot_date(dates, remaining_rel, 'x', label=g + " Unsold", color=main_color)
+                            ax.plot_date(dates, listed['price'], 'x', label=g + " Unsold ({0})".format(len(listed)), color='grey')
+                        elif plot_date_relative_to_event:
+                            dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates]
+                            # ax.plot(dates, remaining_rel, 'x', label=g + " Unsold ({0})".format(len(remaining_rel)), color=main_color)
+                            ax.plot(dates, listed['price'], 'x', label=g + " Unsold ({0})".format(len(listed)), color='grey')
+                        else:
+                            raise ValueError("normalize_dates must be True, False, or a datetime object")
                     else:
-                        raise ValueError("normalize_dates must be True, False, or a datetime object")
+                        print("Listed tickets is empty - skipped for this group")
 
                 # Plot any requested additional variables (different types of averages)
                 for v in included_plot_variables:
@@ -552,6 +563,11 @@ class Event(object):
                         data_name = v
                     print('plotting data from {0}'.format(data_name))
                     avg = getattr(self, data_name)[g]
+                    try:
+                        len(avg)
+                    except TypeError:
+                        print("Unknown type for {0} - skipping".format(v))
+                        continue
                     c = plotstyle[v]['color']
                     label = v
                     ls = plotstyle[v]['linestyle']
@@ -569,34 +585,55 @@ class Event(object):
                         sgc_uf = self.sales_rel
                     elif price_type == 'abs':
                         sgc_uf = self.sales
+                    plot_uf = False
+                    try:
+                        sales_uf_all = sgc_uf.get_seats(self.season_ticket_groups[g]['locs']).get_prices(f=None)
+                        plot_uf = True
+                    except EmptySeatGroupError:
+                        pass
 
-                    sales_uf_all = sgc_uf.get_seats(self.season_ticket_groups[g]['locs']).get_prices(f=None)
+                    if plot_uf:
+                        print("Found unfiltered sales - plotting")
 
-                    dates_all = sales_uf_all['timepoint']
-                    if plot_date_relative_to_event is False:
-                        ax.plot_date(dates_all, sales_uf_all['price'], ".", label=g + " Sales Filtered Out", color='r')
-                    elif plot_date_relative_to_event:
-                        # Is this better served as a SGC property, or at least method?  Will it get used elsewhere?
-                        dates_all = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates_all]
-                        ax.plot(dates_all, sales_uf_all['price'], ".", label=g + " Sales Filtered Out", color='r')
+                        dates_all = sales_uf_all['timepoint']
+                        if plot_date_relative_to_event is False:
+                            ax.plot_date(dates_all, sales_uf_all['price'], ".", label=g + " Sales Filtered Out", color='r')
+                        elif plot_date_relative_to_event:
+                            # Is this better served as a SGC property, or at least method?  Will it get used elsewhere?
+                            dates_all = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates_all]
+                            ax.plot(dates_all, sales_uf_all['price'], ".", label=g + " Sales Filtered Out", color='r')
+                        else:
+                            raise ValueError("normalize_dates must be True, False, or a datetime object")
                     else:
-                        raise ValueError("normalize_dates must be True, False, or a datetime object")
+                        print("Unfiltered sales is empty - skipped for this group")
 
                 # Plot sales (all sales plotted, but minimum sales highlighted)
-                dates = sales['timepoint']
-                dates_all = sales_all['timepoint']
-                if plot_date_relative_to_event is False:
-                    ax.plot_date(dates, sales['price'], "-", marker='.', label=g, color=main_color)[0]
-                    ax.plot_date(dates_all, sales_all['price'], ".", color=main_color)
-                elif plot_date_relative_to_event:
-                    # Is this better served as a SGC property, or at least method?  Will it get used elsewhere?
-                    dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates]
-                    dates_all = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates_all]
-                    ax.plot(dates, sales['price'], "-", label=g + "({0})".format(len(sales_all)), marker='.', color=main_color)[0]
-                    ax.plot(dates_all, sales_all['price'], ".", color=main_color)
-                    ax.set_xlim((None, 1))
+                # Move these down to where data actually gets plotted?  Dont think they're needed up here
+                plot_sales = False
+                try:
+                    sales = sgc.get_seats(self.season_ticket_groups[g]['locs']).get_prices(f = np.min)
+                    sales_all = sgc.get_seats(self.season_ticket_groups[g]['locs']).get_prices(f = None)
+                    plot_sales = True
+                except EmptySeatGroupError:
+                    pass
+                if plot_sales:
+                    print("Found filtered sales - plotting")
+                    dates = sales['timepoint']
+                    dates_all = sales_all['timepoint']
+                    if plot_date_relative_to_event is False:
+                        ax.plot_date(dates, sales['price'], "-", marker='.', label=g, color=main_color)[0]
+                        ax.plot_date(dates_all, sales_all['price'], ".", color=main_color)
+                    elif plot_date_relative_to_event:
+                        # Is this better served as a SGC property, or at least method?  Will it get used elsewhere?
+                        dates = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates]
+                        dates_all = [(d - plot_date_relative_to_event).total_seconds() / 86400.0 for d in dates_all]
+                        ax.plot(dates, sales['price'], "-", label=g + "({0})".format(len(sales_all)), marker='.', color=main_color)[0]
+                        ax.plot(dates_all, sales_all['price'], ".", color=main_color)
+                        ax.set_xlim((None, 1))
+                    else:
+                        raise ValueError("normalize_dates must be True, False, or a datetime object")
                 else:
-                    raise ValueError("normalize_dates must be True, False, or a datetime object")
+                    print("Filtered sales is empty - skipped for this group")
 
                 ax.set_title("vs {1} on {0} (group {2})".format(self.datetime, self.opponent, g))
                 if xlim is None:
@@ -676,7 +713,6 @@ class Event(object):
 
         # Build name of property to use here (is this a good way of doing this?  Makes the code
         # a bit more straight forward, but feels funny...
-        print("Summarizing with price_type={0}, ticket_type={1}".format(price_type, ticket_type))
         if ticket_type not in ['sales', 'sales_filtered', 'listed']:
             raise ValueError("Invalid ticket_type '{0}'".format(ticket_type))
         name = ticket_type
@@ -688,13 +724,7 @@ class Event(object):
             raise ValueError("Invalid price_type '{0}'".format(price_type))
         sgc = getattr(self, name)
 
-        print("All sales:")
-        pprint(sgc.get_prices())
-
         ret = sgc.describe()
-
-        print("describe for overall seats")
-        pprint(ret)
 
         # Embed settings
         ret['price_type'] = price_type
@@ -706,13 +736,98 @@ class Event(object):
             locs = self.season_ticket_groups[g]['locs']
             group_sgc = sgc.get_seats(seat_locs = locs)
             ret['by_group'][g] = group_sgc.describe()
-            print("Describe for group {0}:".format(g))
-            pprint(ret['by_group'][g])
 
         return ret
 
+    @classmethod
+    def get_season_ticket_groups(cls):
+        """
+        Return a season_ticket_groups dictionary without a specific eventid.
+
+        :return: Dict
+        """
+        event = cls(add_meta=False)
+        return event.season_ticket_groups
+
+    @classmethod
+    def profit_margin(cls, df):
+        """
+        Returns a DataFrame of event profit margin given a DataFrame df of event profit.
+
+        :param df: A multiindex DataFrame with indices of EventID and columns of (Season Ticket Group, [statistics])
+        :return: A new DataFrame of similar form to df, but with all group statistics normalized by their respective Season
+                 Ticket Prices.  The Season Ticket group "All" and all Standard Deviations are dropped from the returned DataFrame
+        """
+        pm = df.drop("std", axis=1, level=1).drop('All', axis=1, level=0)
+
+        # Columns to normalize by season ticket price
+        lvl1 = ["mean", "min", "25%", "50%", "75%", "max"]
+
+        # Loop through season ticket prices, normalizing all data in that group
+        season_ticket = cls.season_ticket_to_df()
+        for index, row in season_ticket.iterrows():
+            cols = list(product((index,), lvl1))
+            pm[cols] = pm[cols] / row['Season Ticket Price']
+
+        return pm
+
+    @classmethod
+    def profit_by_group(cls, df, sort_by='25%', profit_type='per_game'):
+        """
+        Returns a DataFrame of profit grouped by Season Ticket Group, with rows as groups and columns as statistics.
+
+        Convenience binding to invoke the profit_by_group() function.
+        :param sort_by: Sort returned df by this
+        :param profit_type: per_game: Profit per game per ticket
+                            per_season: Profit per season per ticket
+        :return: DataFrame with rows of Season Ticket Group and columns of statistics from the original df
+                           (eg: 25th percentile, mean, ...)
+        """
+        return profit_by_group(df, event_class=cls, sort_by=sort_by, profit_type=profit_type)
+
+    @classmethod
+    def profit_margin_by_group(cls, df, sort_by='25%'):
+        """
+        Convenience function to chain profit_margin and profit_by_group together
+        """
+        pm = cls.profit_margin(df)
+        return cls.profit_by_group(pm, profit_type='per_game', sort_by=sort_by)
+
+    @classmethod
+    def profit_by_day(cls, df):
+        """
+        Convenience binding to profit_by_day
+        """
+        return profit_by_col(df, col=("Meta", "Day"), sort_by='index')
+
+    @classmethod
+    def plot_profit_by_day(cls, df, sort_by='index', statistic="25%", kind='box', ax=None, **kwargs):
+        return plot_profit_by_col(df, col=("Meta", "Day"), sort_by=sort_by, statistic=statistic, kind=kind, ax=ax, **kwargs)
+
+    @classmethod
+    def profit_by_col(cls, df, col, sort_by='index'):
+        """
+        Convenience binding to profit_by_day
+        """
+        return profit_by_col(df, col, sort_by=sort_by)
+
+    @classmethod
+    def plot_profit_by_col(cls, df, col, sort_by='index', statistic='25%', kind='box', ax=None, **kwargs):
+        return plot_profit_by_col(df, col, sort_by=sort_by, statistic=statistic, kind=kind, ax=ax, **kwargs)
+
+    @classmethod
+    def season_ticket_to_df(cls):
+        stg = cls.get_season_ticket_groups()
+
+        # np.array of group, group_ticket_price
+        data = np.array([(g, float(stg[g]['price'])) for g in stg.keys()])
+
+        # Dataframe with index of group, column of price
+        df = pd.DataFrame(data[:, 1], index=data[:, 0], columns=['Season Ticket Price'], dtype=np.float)
+        return df
+
 class Panthers(Event):
-    def __init__(self, price_override=None, **kwargs):
+    def __init__(self, price_override=None, add_meta=True, **kwargs):
         super().__init__(**kwargs)
         self.namemap = [
             (r'(?i)\s*Club\s*', ''),
@@ -738,8 +853,9 @@ class Panthers(Event):
         for s in self.season_ticket_groups:
             self.include.update(self.season_ticket_groups[s]['locs'])
 
-        self.event_info_file = "2017_Panthers_event_data.json"
-        self.add_meta()
+        if add_meta:
+            self.event_info_file = "2017_Panthers_event_data.json"
+            self.add_meta()
 
     def init_season_ticket_groups(self):
         """
@@ -907,9 +1023,7 @@ class Panthers(Event):
         # }
 
 class Hornets(Event):
-    def __init__(self, price_override=None, **kwargs):
-        for k, v in kwargs.items():
-            print(k, v)
+    def __init__(self, price_override=None, add_meta=True, **kwargs):
         super().__init__(**kwargs)
         self.namemap = [
             (r'(?i)Inner Circle Club Sideline\s+', ''),
@@ -938,8 +1052,9 @@ class Hornets(Event):
         for s in self.season_ticket_groups:
             self.include.update(self.season_ticket_groups[s]['locs'])
 
-        self.event_info_file = "2017_Hornets_event_data.json"
-        self.add_meta()
+        if add_meta:
+            self.event_info_file = "2017_Hornets_event_data.json"
+            self.add_meta()
 
     def init_season_ticket_groups(self):
         """
@@ -1126,6 +1241,207 @@ class Hornets(Event):
 class EventError(Exception):
     pass
 
+def summarize_events(event_object, directory='./', save_to=None, eventids=None, tp_slice=None, ticket_type='sales_filtered'):
+    """
+    Scrape a directory for events, summarize them, and return summary as a Pandas DataFrame
+
+    :param event_object: The event object to be used for creating events
+    :param directory: Location to search for event JSON files
+    :save_to: Filename to save the output DataFrame to as csv
+    :param eventids: List of eventids to include in summary, or None to grab all events in the directory.
+    :param tp_slice: tp_slice as defined in Event.scrape_timepoints_from_dir()
+    :param event_kwargs: (UNUSED) Optional arguments to pass to the event constructor (in addition to eventid, which is always
+                         passed)
+    :param ticket_type: Type of tickets (sales, sales_filtered, listed) passed to event.summarize()
+    :return: Pandas DataFrame
+    """
+    # Build DataFrame column multiindex
+    days_of_week = {
+        1: 'Monday',
+        2: 'Tuesday',
+        3: 'Wednesday',
+        4: 'Thursday',
+        5: 'Friday',
+        6: 'Saturday',
+        7: 'Sunday',
+    }
+    mkeys = ['vs', 'Day', 'Date']
+    m_prod = product(("Meta", ), mkeys)
+    groups = sorted(event_object.get_season_ticket_groups())
+    groups_all = ['All'] + groups
+    dkeys = ['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max', ]
+    g_prod = product(groups_all, dkeys)
+    all_keys = list(m_prod) + list(g_prod)
+    index = pd.MultiIndex.from_tuples(all_keys) # Index for the columns
+
+    # Find all relevant listings
+    listings = find_listings_files(directory)
+    n = len(listings)
+    print("Found {0} listings".format(n))
+    if eventids is not None:
+        listings = {k: v for k, v in listings.items() if k in eventids} # Why build this as a dict? I never use the values
+        print("{0} of {1} listings specified in eventids argument".format(len(listings), n))
+    ids = sorted(listings)
+
+    # Load data from relevant listings
+    data = []
+    for i, eventid in enumerate(ids):
+        row = []
+        print("Processing event {0}: {1}".format(i + 1, eventid))
+        event = event_object(eventid=eventid)
+        # Extract metadata
+        row.append(event.opponent)
+        row.append(days_of_week[event.datetime.isoweekday()])
+        row.append(event.datetime)
+
+        # Extract ticket data
+        event.scrape_timepoints_from_dir(directory=directory, tp_slice=tp_slice)
+        event.infer_chronological_changes()
+        event.calc_all_average_price_history()
+        # sales_filt_summary[eventid] = event.summarize(ticket_type=ticket_type)
+        sales_filt_summary = event.summarize(ticket_type=ticket_type)
+        row.extend(summary_to_list(sales_filt_summary, groups_all, dkeys))
+
+        data.append(row)
+
+    df = pd.DataFrame(data, columns=index, index=ids)
+    df.index.rename("EventID", inplace=True)
+
+    if save_to:
+        df.to_csv(save_to)
+    return df
+
+
+
+# Functions for interpreting Event DataFrames from summarize_events
+# Maybe you'd sometime want these outside the context of a
+# Make these into a class?  Could also be class functions.  That makes sense as some need the event class (but a few dont)
+# def profit_margin(df, event_class=None):
+
+def profit_by_col(df, col, sort_by='index'):
+    # Does sort_by even work if not 'index'?  These are multiindex columns...
+    gb = df.groupby(by=[col])
+    df_new = gb.mean()
+    if sort_by == 'index':
+        df_new.sort_index()
+    elif sort_by:
+        df_new.sort_values(sort_by, ascending=False, axis=0)
+    return df_new
+
+def plot_profit_by_col(df, col, sort_by='index', statistic="25%", kind='box', ax=None, **kwargs):
+    """
+    Convienance function to plot profit
+
+    :param df: A profit or profit margin DataFrame in the Event.summarize_events() format.
+    :param sub_col: OPTIONAL Subcolumn, such as "mean", to plot data by .  Although not necessary, recommended
+                    at least if using a box plot
+    :param ax: Axes object to plot on
+    :param kwargs: other arguments passed to the plotter (formatting, etc)
+    :return: axes object
+    """
+    if ax==None:
+        fig, ax = plt.subplots()
+
+    df = profit_by_col(df, col, sort_by=sort_by)
+    if statistic:
+        df = df.xs(statistic, level=1, axis=1)
+    ax = df.T.plot(kind=kind, ax=ax, **kwargs)
+    return ax
+
+def profit_by_group(df, event_class=None, sort_by='25%', profit_type='per_game'):
+    """
+    Returns a DataFrame of profit grouped by Season Ticket Group, as defined in event_class, with rows as groups and columns as statistics.
+
+    Convenience binding to invoke the profit_by_group() function.
+    :param sort_by: Sort returned df by this
+    :param profit_type: per_game: Profit per game per ticket
+                        per_season: Profit per season per ticket
+    :return: DataFrame with rows of Season Ticket Group and columns of statistics from the original df
+                       (eg: 25th percentile, mean, ...)
+    """
+    series = []
+    for g in df.columns.levels[0]:
+        if g == 'Meta':
+            continue
+        avg = df[g].mean()
+        avg.name = g
+        series.append(avg)
+    new_df = pd.DataFrame(series)
+
+    # Reorder so count and std are first two columns
+    front_cols = [c for c in ['count', 'std'] if c in new_df]
+    #     other_cols = [c for c in list(new_df.columns) if c not in front_cols]
+    other_cols = [c for c in ["mean", "min", "25%", "50%", "75%", "max"] if c in new_df]
+    new_df = new_df[front_cols + other_cols]
+
+    # Add season ticket prices, if requested
+    if event_class is not None:
+        season_ticket = event_class.season_ticket_to_df()
+        new_df = pd.concat([new_df[['count']], season_ticket, new_df.drop(['count'], axis=1)], axis=1)
+
+    if profit_type == 'per_season':
+        new_df = new_df * 41
+    elif profit_type == 'per_game':
+        pass
+    else:
+        raise ValueError("Invalid profit_type '{0}'".format(profit_type))
+
+    if sort_by is not None:
+        new_df = new_df.sort_values(sort_by, ascending=False, axis=0)
+    return new_df
+
+def profit_by_day(df):
+    """
+    Return a DataFrame that has rows of Day of the Week and Columns of mean prices for different groups
+
+    Sample recipe:
+        only 25% profit by day for each group:
+            df_new = profit_by_day(df).xs("25%", level=1, axis=1)
+        plot only 25% profit by day for each group, as a boxplot:
+            df_new = profit_by_day(df).xs("25%", level=1, axis=1)
+            df_new.T.plot(kind='box')
+            plt.show()
+
+    :param df: A DataFrame in the form of Event.summarize_events return, or the profit margin equivalent.
+    :return: A DaraFrame with rows of Day of the Week and Columns of mean prices for different groups
+
+    """
+    # Replaced with generic...
+    return profit_by_col(df, col=('Meta', 'Day'), sort_by='index')
+
+def plot_profit_by_day(df, sub_col="25%", kind='box', ax=None, **kwargs):
+    """
+    Convienance function to plot profit
+
+    :param df: A profit or profit margin DataFrame in the Event.summarize_events() format.
+    :param sub_col: OPTIONAL Subcolumn, such as "mean", to plot data by .  Although not necessary, recommended
+                    at least if using a box plot
+    :param ax: Axes object to plot on
+    :param kwargs: other arguments passed to the plotter (formatting, etc)
+    :return: axes object
+    """
+    if ax==None:
+        fig, ax = plt.subplots()
+
+    df = profit_by_day(df)
+    if sub_col:
+        df = df.xs(sub_col, level=1, axis=1)
+    ax = df.T.plot(kind=kind, ax=ax, **kwargs)
+    return ax
+
+# def profit_by_day(df):
+# DEPRECIATED
+#     # Recipe:
+#     #  25% profit by day for each group
+#     #  df_new = profit_by_day(df).xs("25%", level=1, axis=1)
+#     col = ('Meta', 'Day')
+#     gb = df.groupby(by=[col])
+#     p_by_day = gb.mean()
+#     p_by_day.sort_index()
+#     return p_by_day
+
+
+
 # Helper
 def mygen(start=0, stop=100, inc=1):
     """A simple custom generator"""
@@ -1133,3 +1449,50 @@ def mygen(start=0, stop=100, inc=1):
     while i < stop:
         yield i
         i += inc
+
+def find_listings_files(directory):
+    listings = {}
+    for fn in os.listdir(directory):
+        full_fn = os.path.join(directory, fn)
+        if os.path.isfile(full_fn):
+            try:
+                this_id, this_time = parse_listings_fn(fn)
+            except:
+                # print(
+                #     "DEBUG: WARNING: {0} cannot be parsed into listings filename format - skipping".format(fn))
+                continue
+            try:
+                listings[this_id][this_time] = full_fn
+            except KeyError:
+                listings[this_id] = {this_time: full_fn}
+    return listings
+
+def parse_listings_fn(fn):
+    match = re.match(r'(\d+)_(.+)\.json', fn)
+    eventid = int(match.group(1))
+    timepoint = datetime.datetime.strptime(match.group(2), DATETIME_FORMAT)
+    return (eventid, timepoint)
+
+def summary_to_list(summary, groups, keys):
+    """
+    Convert an event summary dict to a single list of numbers
+
+    Return is essentially the data corresponding to the tuple keys you get by running product(groups, keys)
+
+    :param summary: Event summary dict
+    :param groups: List of ticket groups to be included in the returned list (entry of "All" means to include the upper
+                   level summary statistics for this event.
+    :param keys: Data labels to include for each group
+    :return: List
+    """
+    row = []
+    for g in groups:
+        # Special case for high level data
+        if g == 'All':
+            row.extend([summary.get(k, np.nan) for k in keys])
+        else:
+            try:
+                row.extend([summary['by_group'][g].get(k, np.nan) for k in keys])
+            except KeyError:
+                row.extend([np.nan] * len(keys))
+    return row
