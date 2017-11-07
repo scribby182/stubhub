@@ -802,6 +802,9 @@ class Event(object):
 
     @classmethod
     def plot_profit_by_day(cls, df, sort_by='index', statistic="25%", kind='box', ax=None, **kwargs):
+        """
+        Convenience function to use plot_profit_by_col() in the context of plotting by day
+        """
         return plot_profit_by_col(df, col=("Meta", "Day"), sort_by=sort_by, statistic=statistic, kind=kind, ax=ax, **kwargs)
 
     @classmethod
@@ -813,10 +816,18 @@ class Event(object):
 
     @classmethod
     def plot_profit_by_col(cls, df, col, sort_by='index', statistic='25%', kind='box', ax=None, **kwargs):
+        """
+        Convenience function to use plot_profit_by_col()
+        """
         return plot_profit_by_col(df, col, sort_by=sort_by, statistic=statistic, kind=kind, ax=ax, **kwargs)
 
     @classmethod
     def season_ticket_to_df(cls):
+        """
+        Returns the class' season ticket prices into a DataFrame of group and price
+
+        :return:
+        """
         stg = cls.get_season_ticket_groups()
 
         # np.array of group, group_ticket_price
@@ -1311,14 +1322,18 @@ def summarize_events(event_object, directory='./', save_to=None, eventids=None, 
         df.to_csv(save_to)
     return df
 
-
-
-# Functions for interpreting Event DataFrames from summarize_events
-# Maybe you'd sometime want these outside the context of a
-# Make these into a class?  Could also be class functions.  That makes sense as some need the event class (but a few dont)
-# def profit_margin(df, event_class=None):
-
 def profit_by_col(df, col, sort_by='index'):
+    """
+    Return a DataFrame that has the contents of df grouped by the column col
+
+    :param df: A DataFrame (usually of event data)
+    :param col: A column to group the data by
+    :param sort_by: Something to sort the data by, eg:
+                        None: Do not sort
+                        index: sort by index (eg: by col)
+                        something: Sort by the column named here
+    :return: A new DataFrame
+    """
     # Does sort_by even work if not 'index'?  These are multiindex columns...
     gb = df.groupby(by=[col])
     df_new = gb.mean()
@@ -1451,6 +1466,19 @@ def mygen(start=0, stop=100, inc=1):
         i += inc
 
 def find_listings_files(directory):
+    """
+    Search a directory and return a dict in the format:
+      {eventid: {
+                 timepoint0: filename0,
+                 timepoint1: filename1,
+                 ...
+                 },
+       eventid1: { ... }
+       ...
+       }
+    :param directory:
+    :return:
+    """
     listings = {}
     for fn in os.listdir(directory):
         full_fn = os.path.join(directory, fn)
@@ -1468,6 +1496,14 @@ def find_listings_files(directory):
     return listings
 
 def parse_listings_fn(fn):
+    """
+    Parse a filename of format DATETIME_FORMAT_eventid to its components.
+
+    NOTE: Does not handle errors properly
+
+    :param fn: Filename to be parsed
+    :return: Tuple of (eventid, timepoint)
+    """
     match = re.match(r'(\d+)_(.+)\.json', fn)
     eventid = int(match.group(1))
     timepoint = datetime.datetime.strptime(match.group(2), DATETIME_FORMAT)
