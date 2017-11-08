@@ -444,8 +444,6 @@ class Event(object):
                            plot_date_relative_to_event=True, xlim=None, ylim=None,
                            plot_listed=True,
                            plot_filtered_out_sales=True,
-                           plot_sales_cumulative_average=True, plot_listings_cumulative_average=True,
-                           plot_sales_moving_average = True, plot_listings_moving_average = True,
                            included_plot_variables = None):
         """
         Plot price versus time for the event by season ticket groups, (DISABLED: filtering prices by function f).
@@ -525,7 +523,7 @@ class Event(object):
         plt.style.use('ggplot')
         for i, g in enumerate(groups):
             # NEED BETTER HANDLING OF GROUPS THAT ARE EMPTY
-            print("Plotting group {0}".format(g))
+            # print("Plotting group {0}".format(g))
             try:
                 fig, ax = plt.subplots()
 
@@ -534,7 +532,6 @@ class Event(object):
                     locs = self.season_ticket_groups[g]['locs']
                     listed = self.chronology.get_seats(seat_locs = locs).get_prices(f = None)
                     if len(listed) > 0:
-                        print("Found tickets listed - plotting")
                         if price_type == 'rel':
                             listed['price'] = listed['price'] - self.season_ticket_groups[g]['price']
                         dates = listed['timepoint']
@@ -561,7 +558,6 @@ class Event(object):
                         data_name = v + "_rel"
                     elif price_type == 'abs':
                         data_name = v
-                    print('plotting data from {0}'.format(data_name))
                     avg = getattr(self, data_name)[g]
                     try:
                         len(avg)
@@ -593,7 +589,7 @@ class Event(object):
                         pass
 
                     if plot_uf:
-                        print("Found unfiltered sales - plotting")
+                        # print("Found unfiltered sales - plotting")
 
                         dates_all = sales_uf_all['timepoint']
                         if plot_date_relative_to_event is False:
@@ -605,7 +601,8 @@ class Event(object):
                         else:
                             raise ValueError("normalize_dates must be True, False, or a datetime object")
                     else:
-                        print("Unfiltered sales is empty - skipped for this group")
+                        pass
+                        # print("Unfiltered sales is empty - skipped for this group")
 
                 # Plot sales (all sales plotted, but minimum sales highlighted)
                 # Move these down to where data actually gets plotted?  Dont think they're needed up here
@@ -617,7 +614,6 @@ class Event(object):
                 except EmptySeatGroupError:
                     pass
                 if plot_sales:
-                    print("Found filtered sales - plotting")
                     dates = sales['timepoint']
                     dates_all = sales_all['timepoint']
                     if plot_date_relative_to_event is False:
@@ -633,7 +629,8 @@ class Event(object):
                     else:
                         raise ValueError("normalize_dates must be True, False, or a datetime object")
                 else:
-                    print("Filtered sales is empty - skipped for this group")
+                    pass
+                    # print("Filtered sales is empty - skipped for this group")
 
                 ax.set_title("vs {1} on {0} (group {2})".format(self.datetime, self.opponent, g))
                 if xlim is None:
@@ -653,6 +650,9 @@ class Event(object):
                 else:
                     ax.set_xlabel("Days Before Event")
                 plt.legend(loc='upper left', fontsize='x-small')
+                ax.minorticks_on()
+                # Customize the minor grid
+                ax.grid(which='minor', linestyle=':', linewidth=1.0)
                 fig.autofmt_xdate()
                 fig.savefig(prefix + g + ".png")
                 plt.close(fig)
@@ -1252,9 +1252,10 @@ class Hornets(Event):
 class EventError(Exception):
     pass
 
-def summarize_events(event_object, directory='./', save_to=None, eventids=None, tp_slice=None, ticket_type='sales_filtered'):
+def summarize_events(event_object, directory='./', save_to=None, eventids=None, tp_slice=None, ticket_type='sales_filtered',
+                     plot_settings=None):
     """
-    Scrape a directory for events, summarize them, and return summary as a Pandas DataFrame
+    Scrape a directory for events, summarize them, and return summary as a Pandas DataFrame.
 
     :param event_object: The event object to be used for creating events
     :param directory: Location to search for event JSON files
@@ -1264,6 +1265,9 @@ def summarize_events(event_object, directory='./', save_to=None, eventids=None, 
     :param event_kwargs: (UNUSED) Optional arguments to pass to the event constructor (in addition to eventid, which is always
                          passed)
     :param ticket_type: Type of tickets (sales, sales_filtered, listed) passed to event.summarize()
+    :plot_settings: (Optional) List of dicts of settings for plot_price_history (allows to make ticket vs date plots
+                    during the summary).  For each dict, a different call to plot_price_history will be made.  Note that
+                    prefix is always appended with eventid when passed.
     :return: Pandas DataFrame
     """
     # Build DataFrame column multiindex
@@ -1312,6 +1316,17 @@ def summarize_events(event_object, directory='./', save_to=None, eventids=None, 
         # sales_filt_summary[eventid] = event.summarize(ticket_type=ticket_type)
         sales_filt_summary = event.summarize(ticket_type=ticket_type)
         row.extend(summary_to_list(sales_filt_summary, groups_all, dkeys))
+
+        # Generate Ticket vs Time plots
+        if plot_settings:
+            for ps in plot_settings:
+                ps_local = copy.deepcopy(ps)
+                try:
+                    ps_local['prefix']
+                except KeyError:
+                    ps_local['prefix'] = ""
+                ps_local['prefix'] = ps_local['prefix'] + str(eventid) + "_"
+                event.plot_price_history(**ps_local)
 
         data.append(row)
 
